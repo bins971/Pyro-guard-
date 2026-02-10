@@ -1,0 +1,8 @@
+# Fire Detection Dataset Configuration
+path: D:/PYRO-GUARD A VISION-BASED SYSTEM FOR FIRE LEVEL DETECTION IN SURVEILLANCE NETWORKS/dataset
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 4
+names: ['fire', 'light', 'no-fire', 'smoke']

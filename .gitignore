@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Model files (too large for git)
+*.pt
+*.pth
+*.onnx
+runs/
+
+# Detection images
+detections/
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.avi
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+.next/
+out/
+*.log
+
+# Database
+*.db
+*.sqlite

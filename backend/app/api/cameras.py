@@ -1,0 +1,133 @@
+"""
+Camera management API endpoints
+"""
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from typing import List
+from ..database import get_db
+from ..models import Camera
+from ..schemas import Camera as CameraSchema, CameraCreate, CameraUpdate
+from ..detection import MultiStreamHandler
+
+router = APIRouter(prefix="/cameras", tags=["cameras"])
+
+# Global stream handler (will be initialized in main.py)
+stream_handler: MultiStreamHandler = None
+
+
+def set_stream_handler(handler: MultiStreamHandler):
+    """Set the global stream handler"""
+    global stream_handler
+    stream_handler = handler
+
+
+@router.post("/", response_model=CameraSchema, status_code=status.HTTP_201_CREATED)
+def create_camera(camera: CameraCreate, db: Session = Depends(get_db)):
+    """
+    Create a new camera
+    """
+    db_camera = Camera(**camera.model_dump())
+    db.add(db_camera)
+    db.commit()
+    db.refresh(db_camera)
+    
+    # Start stream if active and RTSP URL provided
+    if db_camera.is_active and db_camera.rtsp_url and stream_handler:
+        stream_handler.add_stream(db_camera.id, db_camera.rtsp_url)
+    
+    return db_camera
+
+
+@router.get("/", response_model=List[CameraSchema])
+def list_cameras(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    List all cameras
+    """
+    cameras = db.query(Camera).offset(skip).limit(limit).all()
+    return cameras
+
+
+@router.get("/{camera_id}", response_model=CameraSchema)
+def get_camera(camera_id: int, db: Session = Depends(get_db)):
+    """
+    Get camera by ID
+    """
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return camera
+
+
+@router.put("/{camera_id}", response_model=CameraSchema)
+def update_camera(camera_id: int, camera_update: CameraUpdate, db: Session = Depends(get_db)):
+    """
+    Update camera
+    """
+    db_camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not db_camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    
+    # Update fields
+    update_data = camera_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(db_camera, field, value)
+    
+    db.commit()
+    db.refresh(db_camera)
+    
+    # Update stream
+    if stream_handler:
+        if db_camera.is_active and db_camera.rtsp_url:
+            # Restart stream with new settings
+            stream_handler.remove_stream(camera_id)
+            stream_handler.add_stream(camera_id, db_camera.rtsp_url)
+        else:
+            # Stop stream if deactivated
+            stream_handler.remove_stream(camera_id)
+    
+    return db_camera
+
+
+@router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_camera(camera_id: int, db: Session = Depends(get_db)):
+    """
+    Delete camera
+    """
+    db_camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not db_camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    
+    # Stop stream
+    if stream_handler:
+        stream_handler.remove_stream(camera_id)
+    
+    db.delete(db_camera)
+    db.commit()
+    
+    return None
+
+
+@router.get("/{camera_id}/status")
+def get_camera_status(camera_id: int, db: Session = Depends(get_db)):
+    """
+    Get camera stream status
+    """
+    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    
+    stream_active = False
+    fps = 0.0
+    
+    if stream_handler:
+        stream = stream_handler.get_stream(camera_id)
+        if stream:
+            stream_active = stream.is_active()
+            fps = stream.get_fps()
+    
+    return {
+        "camera_id": camera_id,
+        "is_active": camera.is_active,
+        "stream_active": stream_active,
+        "fps": fps
+    }
