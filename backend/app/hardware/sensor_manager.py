@@ -17,6 +17,8 @@ class SensorManager:
         self.is_running = False
         self.thread = None
         self.latest_data = {}
+        self.ema_data = {}
+        self.alpha = 0.3
         self.data_lock = threading.Lock()
         
     def register_sensor(self, sensor: HardwareSensor):

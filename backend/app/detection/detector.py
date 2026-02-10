@@ -107,7 +107,7 @@ class FireDetector:
                             'confidence': confidence,
                             'class': display_name 
                         })
-                        logger.info(f"🔥 Added {display_name} detection to results ({confidence:.2f})")
+                        logger.info(f"Added {display_name} detection to results ({confidence:.2f})")
                     else:
                         pass
         

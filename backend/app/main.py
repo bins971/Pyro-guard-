@@ -137,7 +137,7 @@ async def monitor_cameras():
                             # Update last alert time
                             last_alert_time[camera_id] = current_time
                             
-                            logger.info(f"🔥 ALERT: Fire Level {result['fire_level']} detected at {camera.name}")
+                            logger.info(f"ALERT: Fire Level {result['fire_level']} detected at {camera.name}")
             
             db.close()
             
@@ -153,11 +153,11 @@ async def monitor_cameras():
 async def lifespan(app: FastAPI):
  
     # Startup
-    logger.info("🚀 Starting PYRO-GUARD system...")
+    logger.info("Starting PYRO-GUARD system...")
     
     # Initialize database
     init_db()
-    logger.info("✅ Database initialized")
+    logger.info("Database initialized")
     
     # Set stream handler for camera API
     set_stream_handler(stream_handler)
@@ -168,7 +168,7 @@ async def lifespan(app: FastAPI):
     for camera in active_cameras:
         if camera.rtsp_url:
             stream_handler.add_stream(camera.id, camera.rtsp_url)
-            logger.info(f"📹 Started stream for camera: {camera.name}")
+            logger.info(f"Started stream for camera: {camera.name}")
     db.close()
     
     # Start monitoring task
@@ -177,16 +177,16 @@ async def lifespan(app: FastAPI):
     # Start sensor manager
     sensor_manager.start()
     
-    logger.info("✅ PYRO-GUARD system ready!")
+    logger.info("PYRO-GUARD system ready!")
     
     yield
     
     # Shutdown
-    logger.info("🛑 Shutting down PYRO-GUARD system...")
+    logger.info("Shutting down PYRO-GUARD system...")
     monitoring_task.cancel()
     stream_handler.stop_all()
     sensor_manager.stop()
-    logger.info("✅ Shutdown complete")
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI app

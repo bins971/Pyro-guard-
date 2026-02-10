@@ -65,7 +65,7 @@ class Alert(Base):
     status = Column(String(20), default='pending') 
     
     # Recipients
-    recipients = Column(ARRAY(String))
+    recipients = Column(JSON)
     
     # Error message if failed
     error_message = Column(String(500))
