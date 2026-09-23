@@ -1,6 +1,3 @@
-"""
-Detection API endpoints
-"""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -24,39 +21,31 @@ def list_detections(
     end_date: Optional[datetime] = None,
     db: Session = Depends(get_db)
 ):
-    """
-    List detections with optional filters
-    """
     query = db.query(Detection)
-    
-    # Apply filters
+
     if camera_id:
         query = query.filter(Detection.camera_id == camera_id)
-    
+
     if fire_level is not None:
         query = query.filter(Detection.fire_level == fire_level)
-    
+
     if min_confidence:
         query = query.filter(Detection.confidence >= min_confidence)
-    
+
     if start_date:
         query = query.filter(Detection.timestamp >= start_date)
-    
+
     if end_date:
         query = query.filter(Detection.timestamp <= end_date)
-    
-    # Order by timestamp descending
+
     query = query.order_by(desc(Detection.timestamp))
-    
+
     detections = query.offset(skip).limit(limit).all()
     return detections
 
 
 @router.get("/{detection_id}", response_model=DetectionWithCamera)
 def get_detection(detection_id: int, db: Session = Depends(get_db)):
-    """
-    Get detection by ID
-    """
     detection = db.query(Detection).filter(Detection.id == detection_id).first()
     if not detection:
         raise HTTPException(status_code=404, detail="Detection not found")
@@ -69,30 +58,26 @@ def get_detection_stats(
     days: int = Query(7, ge=1, le=365),
     db: Session = Depends(get_db)
 ):
-    """
-    Get detection statistics
-    """
     start_date = datetime.now() - timedelta(days=days)
-    
+
     query = db.query(Detection).filter(Detection.timestamp >= start_date)
-    
+
     if camera_id:
         query = query.filter(Detection.camera_id == camera_id)
-    
+
     detections = query.all()
-    
-    # Calculate statistics
+
     total_detections = len(detections)
-    
+
     fire_level_distribution = {
         "level_0": sum(1 for d in detections if d.fire_level == 0),
         "level_1": sum(1 for d in detections if d.fire_level == 1),
         "level_2": sum(1 for d in detections if d.fire_level == 2),
         "level_3": sum(1 for d in detections if d.fire_level == 3),
     }
-    
+
     avg_confidence = sum(d.confidence for d in detections) / total_detections if total_detections > 0 else 0
-    
+
     return {
         "total_detections": total_detections,
         "fire_level_distribution": fire_level_distribution,
@@ -109,19 +94,15 @@ def get_detection_timeline(
     days: int = Query(7, ge=1, le=365),
     db: Session = Depends(get_db)
 ):
-    """
-    Get detection timeline for charts
-    """
     start_date = datetime.now() - timedelta(days=days)
-    
+
     query = db.query(Detection).filter(Detection.timestamp >= start_date)
-    
+
     if camera_id:
         query = query.filter(Detection.camera_id == camera_id)
-    
+
     detections = query.order_by(Detection.timestamp).all()
-    
-    # Group by date
+
     timeline = {}
     for detection in detections:
         date_key = detection.timestamp.strftime('%Y-%m-%d')
@@ -134,10 +115,10 @@ def get_detection_timeline(
                 "level_2": 0,
                 "level_3": 0
             }
-        
+
         timeline[date_key]["total"] += 1
         timeline[date_key][f"level_{detection.fire_level}"] += 1
-    
+
     return {
         "timeline": list(timeline.values()),
         "period_days": days
@@ -149,29 +130,26 @@ def get_detections_by_camera(
     days: int = Query(7, ge=1, le=365),
     db: Session = Depends(get_db)
 ):
-    """
-    Get detection statistics grouped by camera
-    """
     start_date = datetime.now() - timedelta(days=days)
-    
+
     cameras = db.query(Camera).all()
-    
+
     camera_stats = []
     for camera in cameras:
         detections = db.query(Detection).filter(
             Detection.camera_id == camera.id,
             Detection.timestamp >= start_date
         ).all()
-        
+
         fire_level_distribution = {
             "level_0": sum(1 for d in detections if d.fire_level == 0),
             "level_1": sum(1 for d in detections if d.fire_level == 1),
             "level_2": sum(1 for d in detections if d.fire_level == 2),
             "level_3": sum(1 for d in detections if d.fire_level == 3),
         }
-        
+
         last_detection = max((d.timestamp for d in detections), default=None)
-        
+
         camera_stats.append({
             "camera_id": camera.id,
             "camera_name": camera.name,
@@ -180,7 +158,7 @@ def get_detections_by_camera(
             "fire_level_distribution": fire_level_distribution,
             "last_detection": last_detection
         })
-    
+
     return {
         "cameras": camera_stats,
         "period_days": days

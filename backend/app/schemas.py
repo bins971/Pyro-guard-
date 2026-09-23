@@ -1,12 +1,8 @@
-"""
-Pydantic schemas for request/response validation
-"""
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
-# Camera Schemas
 class CameraBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     location: Optional[str] = Field(None, max_length=200)
@@ -29,12 +25,11 @@ class Camera(CameraBase):
     id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 
 
-# Detection Schemas
 class DetectionBase(BaseModel):
     camera_id: int
     fire_level: int = Field(..., ge=0, le=3)
@@ -51,7 +46,7 @@ class DetectionCreate(DetectionBase):
 class Detection(DetectionBase):
     id: int
     timestamp: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -60,7 +55,6 @@ class DetectionWithCamera(Detection):
     camera: Camera
 
 
-# Alert Schemas
 class AlertBase(BaseModel):
     detection_id: int
     alert_type: str = Field(..., pattern="^(email|sms|both)$")
@@ -76,7 +70,7 @@ class Alert(AlertBase):
     sent_at: datetime
     status: str
     error_message: Optional[str] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -85,7 +79,6 @@ class AlertWithDetection(Alert):
     detection: Detection
 
 
-# Statistics Schemas
 class FireLevelStats(BaseModel):
     level_0: int = 0
     level_1: int = 0
@@ -110,7 +103,6 @@ class SystemStats(BaseModel):
     recent_detections: List[Detection]
 
 
-# Live Detection Response
 class LiveDetectionResult(BaseModel):
     camera_id: int
     fire_detected: bool

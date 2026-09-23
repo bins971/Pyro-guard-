@@ -1,14 +1,10 @@
-"""
-Hardware sensor abstraction for PYRO-GUARD
-"""
+
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from datetime import datetime
 
 class HardwareSensor(ABC):
-    """
-    Base class for all hardware sensors (Temperature, Gas, Smoke, etc.)
-    """
+
     
     def __init__(self, sensor_id: str, name: str):
         self.sensor_id = sensor_id
@@ -19,21 +15,19 @@ class HardwareSensor(ABC):
         
     @abstractmethod
     def initialize(self) -> bool:
-        """Initialize the hardware connection"""
         pass
     
     @abstractmethod
     def read(self) -> Dict[str, Any]:
-        """Read data from the sensor"""
+
         pass
     
     @abstractmethod
     def cleanup(self):
-        """Release hardware resources"""
+
         pass
 
     def get_status(self) -> Dict[str, Any]:
-        """Return current sensor status and last reading"""
         return {
             "sensor_id": self.sensor_id,
             "name": self.name,

@@ -1,6 +1,4 @@
-"""
-Alert service for email notifications using Brevo (formerly Sendinblue)
-"""
+
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -12,15 +10,7 @@ from ..config import settings
 
 
 class AlertService:
-    """
-    Handles alert notifications via email using Brevo SMTP
-    
-    Brevo Configuration:
-    - SMTP Host: smtp-relay.brevo.com
-    - SMTP Port: 587 (TLS)
-    - Get your SMTP credentials from: https://app.brevo.com/settings/keys/smtp
-    """
-    
+   
     def __init__(self):
         self.smtp_host = settings.SMTP_HOST
         self.smtp_port = settings.SMTP_PORT
@@ -41,21 +31,6 @@ class AlertService:
         image_path: Optional[str] = None,
         recipients: Optional[List[str]] = None
     ) -> bool:
-        """
-        Send fire alert via email
-        
-        Args:
-            camera_name: Name of the camera
-            location: Camera location
-            fire_level: Detected fire level (0-3)
-            confidence: Detection confidence
-            timestamp: Detection timestamp
-            image_path: Path to detection image
-            recipients: List of email recipients
-        
-        Returns:
-            True if email sent successfully
-        """
         if not self.smtp_user or not self.smtp_password:
             print("Warning: SMTP credentials not configured")
             return False
@@ -87,79 +62,77 @@ class AlertService:
                 3: "🚨"
             }
             
-            html_body = f"""
-            <html>
-                <head>
-                    <style>
-                        body {{ font-family: Arial, sans-serif; }}
-                        .alert-box {{
-                            border: 3px solid {'#EF4444' if fire_level >= 2 else '#FBBF24'};
-                            border-radius: 10px;
-                            padding: 20px;
-                            margin: 20px;
-                            background-color: #FEF2F2;
-                        }}
-                        .level-badge {{
-                            display: inline-block;
-                            padding: 10px 20px;
-                            border-radius: 5px;
-                            background-color: {'#EF4444' if fire_level == 3 else '#F97316' if fire_level == 2 else '#FBBF24'};
-                            color: white;
-                            font-weight: bold;
-                            font-size: 18px;
-                        }}
-                        .info-table {{
-                            width: 100%;
-                            border-collapse: collapse;
-                            margin-top: 20px;
-                        }}
-                        .info-table td {{
-                            padding: 10px;
-                            border-bottom: 1px solid #ddd;
-                        }}
-                        .info-table td:first-child {{
-                            font-weight: bold;
-                            width: 150px;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <div class="alert-box">
-                        <h1>{level_emojis.get(fire_level, '🔥')} FIRE DETECTION ALERT</h1>
-                        <div class="level-badge">
-                            Level {fire_level}: {level_names.get(fire_level, 'Unknown')}
-                        </div>
-                        
-                        <table class="info-table">
-                            <tr>
-                                <td>Camera:</td>
-                                <td>{camera_name}</td>
-                            </tr>
-                            <tr>
-                                <td>Location:</td>
-                                <td>{location or 'N/A'}</td>
-                            </tr>
-                            <tr>
-                                <td>Fire Level:</td>
-                                <td>{level_names.get(fire_level, 'Unknown')}</td>
-                            </tr>
-                            <tr>
-                                <td>Confidence:</td>
-                                <td>{confidence * 100:.1f}%</td>
-                            </tr>
-                            <tr>
-                                <td>Detected At:</td>
-                                <td>{timestamp.strftime('%Y-%m-%d %H:%M:%S')}</td>
-                            </tr>
-                        </table>
-                        
-                        <p style="margin-top: 20px; color: #DC2626; font-weight: bold;">
-                            ⚠️ Please take immediate action and verify the situation.
-                        </p>
-                    </div>
-                </body>
-            </html>
-            """
+            html_body = (
+                "<html>\n"
+                "    <head>\n"
+                "        <style>\n"
+                "            body { font-family: Arial, sans-serif; }\n"
+                f"            .alert-box {{\n"
+                f"                border: 3px solid {'#EF4444' if fire_level >= 2 else '#FBBF24'};\n"
+                f"                border-radius: 10px;\n"
+                f"                padding: 20px;\n"
+                f"                margin: 20px;\n"
+                f"                background-color: #FEF2F2;\n"
+                f"            }}\n"
+                f"            .level-badge {{\n"
+                f"                display: inline-block;\n"
+                f"                padding: 10px 20px;\n"
+                f"                border-radius: 5px;\n"
+                f"                background-color: {'#EF4444' if fire_level == 3 else '#F97316' if fire_level == 2 else '#FBBF24'};\n"
+                f"                color: white;\n"
+                f"                font-weight: bold;\n"
+                f"                font-size: 18px;\n"
+                f"            }}\n"
+                "            .info-table {\n"
+                "                width: 100%;\n"
+                "                border-collapse: collapse;\n"
+                "                margin-top: 20px;\n"
+                "            }\n"
+                "            .info-table td {\n"
+                "                padding: 10px;\n"
+                "                border-bottom: 1px solid #ddd;\n"
+                "            }\n"
+                "            .info-table td:first-child {\n"
+                "                font-weight: bold;\n"
+                "                width: 150px;\n"
+                "            }\n"
+                "        </style>\n"
+                "    </head>\n"
+                "    <body>\n"
+                "        <div class=\"alert-box\">\n"
+                f"            <h1>{level_emojis.get(fire_level, '🔥')} FIRE DETECTION ALERT</h1>\n"
+                "            <div class=\"level-badge\">\n"
+                f"                Level {fire_level}: {level_names.get(fire_level, 'Unknown')}\n"
+                "            </div>\n"
+                "            <table class=\"info-table\">\n"
+                "                <tr>\n"
+                "                    <td>Camera:</td>\n"
+                f"                    <td>{camera_name}</td>\n"
+                "                </tr>\n"
+                "                <tr>\n"
+                "                    <td>Location:</td>\n"
+                f"                    <td>{location or 'N/A'}</td>\n"
+                "                </tr>\n"
+                "                <tr>\n"
+                "                    <td>Fire Level:</td>\n"
+                f"                    <td>{level_names.get(fire_level, 'Unknown')}</td>\n"
+                "                </tr>\n"
+                "                <tr>\n"
+                "                    <td>Confidence:</td>\n"
+                f"                    <td>{confidence * 100:.1f}%</td>\n"
+                "                </tr>\n"
+                "                <tr>\n"
+                "                    <td>Detected At:</td>\n"
+                f"                    <td>{timestamp.strftime('%Y-%m-%d %H:%M:%S')}</td>\n"
+                "                </tr>\n"
+                "            </table>\n"
+                "            <p style=\"margin-top: 20px; color: #DC2626; font-weight: bold;\">\n"
+                "                ⚠️ Please take immediate action and verify the situation.\n"
+                "            </p>\n"
+                "        </div>\n"
+                "    </body>\n"
+                "</html>\n"
+            )
             
             msg.attach(MIMEText(html_body, 'html'))
             
@@ -182,5 +155,62 @@ class AlertService:
         except Exception as e:
             print(f"Error sending email alert: {e}")
             return False
-    
 
+    def send_sms_alert(
+        self,
+        location: str,
+        fire_level: int,
+        timestamp: datetime,
+        recipients: Optional[List[str]] = None
+    ) -> bool:
+        """
+        Send fire alert via SMS using Brevo API
+        """
+        api_key = settings.BREVO_API_KEY
+        if not api_key:
+            print("Warning: Brevo API key not configured for SMS")
+            return False
+            
+        sms_recipients_str = settings.SMS_RECIPIENTS
+        recipients = recipients or [x.strip() for x in sms_recipients_str.split(',')] if sms_recipients_str else []
+        if not recipients:
+            print("Warning: No SMS recipients configured")
+            return False
+            
+        import requests
+        
+        url = "https://api.brevo.com/v3/transactionalSMS/sms"
+        headers = {
+            "accept": "application/json",
+            "api-key": api_key,
+            "content-type": "application/json"
+        }
+        
+        level_names = {
+            0: "No Fire",
+            1: "Small Fire",
+            2: "Medium Fire",
+            3: "Large/Critical Fire"
+        }
+        
+        time_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        content = f"🔥 FIRE DETECTED!\nLocation: {location or 'Unknown'}\nLevel: {fire_level} ({level_names.get(fire_level, 'Unknown')})\nTime: {time_str}\nPlease take immediate action!"
+        
+        success = False
+        for recipient in recipients:
+            payload = {
+                "sender": "PyroGuard",
+                "recipient": recipient,
+                "content": content
+            }
+            try:
+                response = requests.post(url, json=payload, headers=headers)
+                if response.status_code in (200, 201, 202):
+                    print(f"SMS alert sent successfully to {recipient}")
+                    success = True
+                else:
+                    print(f"Failed to send SMS to {recipient}: {response.text}")
+            except Exception as e:
+                print(f"Error sending SMS alert to {recipient}: {e}")
+                
+        return success
