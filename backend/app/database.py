@@ -34,6 +34,12 @@ def init_db():
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'operator'"))
                 conn.execute(text("UPDATE users SET role = 'admin' WHERE is_admin = 1"))
                 conn.commit()
+
+            det_result = conn.execute(text("PRAGMA table_info(detections)")).fetchall()
+            det_columns = [row[1] for row in det_result]
+            if "video_path" not in det_columns:
+                conn.execute(text("ALTER TABLE detections ADD COLUMN video_path VARCHAR(500)"))
+                conn.commit()
         except Exception as e:
             print(f"Migration check notice: {e}")
 

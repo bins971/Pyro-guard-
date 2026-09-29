@@ -3,7 +3,7 @@ import sys
 import paramiko
 from pathlib import Path
 
-PI_IP = "192.168.1.15"
+PI_IP = "192.168.1.21"
 PI_USER = "pyroguard"
 PI_PASS = "pyroguard041505"
 
@@ -78,9 +78,13 @@ print("\n[*] Uploading fresh backend code and models to Raspberry Pi...")
 print("[*] Uploading app/ directory...")
 upload_dir(LOCAL_BACKEND / "app", f"{REMOTE_BACKEND}/app")
 
-# Upload models directory
-print("[*] Uploading new models/ directory (PyTorch + NCNN)...")
-upload_dir(LOCAL_BACKEND / "models", f"{REMOTE_BACKEND}/models")
+# Upload active model only (keep backup weights safely on PC)
+print("[*] Uploading active model (fire_yolov8.pt)...")
+ensure_remote_dir(f"{REMOTE_BACKEND}/models")
+active_model = LOCAL_BACKEND / "models" / "fire_yolov8.pt"
+if active_model.exists():
+    sftp.put(str(active_model), f"{REMOTE_BACKEND}/models/fire_yolov8.pt")
+    print("  -> Uploaded: models/fire_yolov8.pt")
 
 # Upload config and database files
 files_to_copy = ["requirements.txt", "pyroguard.db", "package.json"]

@@ -8,6 +8,7 @@ class CameraBase(BaseModel):
     location: Optional[str] = Field(None, max_length=200)
     rtsp_url: Optional[str] = Field(None, max_length=500)
     is_active: bool = True
+    is_online: bool = False
 
 
 class CameraCreate(CameraBase):
@@ -36,6 +37,7 @@ class DetectionBase(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0)
     bbox_area: Optional[float] = Field(None, ge=0.0, le=1.0)
     image_path: Optional[str] = None
+    video_path: Optional[str] = None
     detection_metadata: Optional[Dict[str, Any]] = None
 
 

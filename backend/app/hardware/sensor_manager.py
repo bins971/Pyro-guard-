@@ -23,6 +23,13 @@ class SensorManager:
         if sensor.initialize():
             sensor.is_active = True
             self.sensors[sensor.sensor_id] = sensor
+            if sensor.last_value:
+                self.ema_data[sensor.sensor_id] = sensor.last_value.copy()
+                with self.data_lock:
+                    self.latest_data[sensor.sensor_id] = {
+                        k: (round(v, 2) if isinstance(v, (float, int)) else v)
+                        for k, v in sensor.last_value.items()
+                    }
             logger.info(f"Registered sensor: {sensor.name} ({sensor.sensor_id})")
         else:
             logger.warning(f"Failed to initialize sensor: {sensor.name}")

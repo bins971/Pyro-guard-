@@ -176,7 +176,7 @@ def register(request: RegisterRequest, req: Request, db: Session = Depends(get_d
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already registered")
     
     requested_role = (request.role or "operator").lower()
-    if requested_role not in ["admin", "operator", "viewer"]:
+    if requested_role not in ["admin", "operator"]:
         requested_role = "operator"
 
     new_user = User(
@@ -255,7 +255,7 @@ def create_user(
     
     # Determine role
     target_role = (body.role or "operator").lower()
-    if target_role not in ["admin", "operator", "viewer"]:
+    if target_role not in ["admin", "operator"]:
         target_role = "admin" if body.is_admin else "operator"
     
     is_admin = (target_role == "admin") or (body.is_admin is True)
@@ -308,7 +308,7 @@ def update_user(
 
     if body.role is not None:
         target_role = body.role.lower()
-        if target_role in ["admin", "operator", "viewer"]:
+        if target_role in ["admin", "operator"]:
             user.role = target_role
             user.is_admin = (target_role == "admin")
     elif body.is_admin is not None:

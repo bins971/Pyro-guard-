@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -6,12 +6,14 @@ from contextlib import asynccontextmanager
 import asyncio
 import cv2
 import os
+import time
+import threading
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .database import init_db, SessionLocal
-from .models import Camera, Detection, Alert
+from .models import Camera, Detection, Alert, User
 from .detection import FireDetector, MultiStreamHandler
 from .services import AlertService, S3Service
 from .services.ptz_service import PTZController
@@ -75,16 +77,132 @@ last_alert_time = {}
 last_save_time = {}
 consecutive_detections = {}
 
-# GPIO debounce: require N consecutive fire frames before activating LEDs/buzzer
-_gpio_fire_streak = 0
-_GPIO_DEBOUNCE_FRAMES = 2  # 2 consecutive frames confirms fire for fast LED/buzzer reaction
+# GPIO fire reaction & hold configuration: hold LED/buzzer for 3.5s so breadboard LED glows visibly
+_gpio_last_fire_time = 0.0
+_GPIO_HOLD_SECONDS = 3.5  # Seconds to hold LED indicator ON after detection
 
 # Cache detection results so the live feed can overlay them without re-running AI
 _cached_detections = {}
 
 
+def record_fire_clip(camera_id: int, start_frame: cv2.typing.MatLike, stream, output_path: str, duration_sec: float = 10.0, fps: int = 15):
+    """
+    Records an authentic 10-second H.264 video clip starting from when fire is detected.
+    Uses ffmpeg with libx264 for universal HTML5 browser playback with +faststart.
+    """
+    import subprocess
+    import shutil
+
+    h, w = start_frame.shape[:2]
+    ffmpeg_bin = shutil.which("ffmpeg")
+
+    if ffmpeg_bin:
+        # Prefer Raspberry Pi VideoCore hardware H.264 encoder (0% CPU, 6.5x speed) on Linux
+        use_hw = platform.system() == "Linux"
+        encoder_args = ['-c:v', 'h264_v4l2m2m', '-b:v', '1500k'] if use_hw else ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-crf', '24']
+
+        cmd = [
+            ffmpeg_bin, '-y',
+            '-f', 'rawvideo',
+            '-vcodec', 'rawvideo',
+            '-s', f'{w}x{h}',
+            '-pix_fmt', 'bgr24',
+            '-r', str(fps),
+            '-i', '-',
+            *encoder_args,
+            '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        try:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            start_time = time.time()
+            frame_interval = 1.0 / fps
+
+            # Write initial frame
+            first_frame = start_frame.copy()
+            cv2.putText(first_frame, "REC 0.0s / 10.0s [FIRE TRIGGER]", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+            proc.stdin.write(first_frame.tobytes())
+
+            while (time.time() - start_time) < duration_sec:
+                loop_t = time.time()
+                frame = stream.get_frame(timeout=0.2)
+                if frame is not None:
+                    overlay = frame.copy()
+                    cached = _cached_detections.get(camera_id)
+                    if cached and cached.get('fire_detected'):
+                        overlay = detector.draw_detections(overlay, cached)
+
+                    elapsed = time.time() - start_time
+                    cv2.putText(
+                        overlay,
+                        f"REC +{elapsed:.1f}s / {duration_sec:.0f}s",
+                        (15, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        (0, 0, 255),
+                        2
+                    )
+                    proc.stdin.write(overlay.tobytes())
+
+                sleep_t = frame_interval - (time.time() - loop_t)
+                if sleep_t > 0:
+                    time.sleep(sleep_t)
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            logger.info(f"10-second H.264 fire incident video recorded via ffmpeg: {output_path}")
+            return
+        except Exception as e:
+            logger.error(f"Error in ffmpeg recording for camera {camera_id}: {e}, falling back to cv2")
+
+    # Fallback to OpenCV VideoWriter
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, float(fps), (w, h))
+        if not out.isOpened():
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')
+            out = cv2.VideoWriter(output_path, fourcc, float(fps), (w, h))
+        if not out.isOpened():
+            logger.error(f"Failed to open video writer for {output_path}")
+            return
+
+        start_time = time.time()
+        frame_interval = 1.0 / fps
+        out.write(start_frame)
+
+        while (time.time() - start_time) < duration_sec:
+            loop_t = time.time()
+            frame = stream.get_frame(timeout=0.2)
+            if frame is not None:
+                overlay = frame.copy()
+                cached = _cached_detections.get(camera_id)
+                if cached and cached.get('fire_detected'):
+                    overlay = detector.draw_detections(overlay, cached)
+
+                elapsed = time.time() - start_time
+                cv2.putText(
+                    overlay,
+                    f"REC +{elapsed:.1f}s / {duration_sec:.0f}s",
+                    (15, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 0, 255),
+                    2
+                )
+                out.write(overlay)
+            sleep_t = frame_interval - (time.time() - loop_t)
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+
+        out.release()
+        logger.info(f"10-second fire incident video saved via cv2: {output_path}")
+    except Exception as e:
+        logger.error(f"Error in cv2 recording for camera {camera_id}: {e}")
+
+
 async def monitor_cameras():
-    global _gpio_fire_streak
+    global _gpio_last_fire_time
     logger.info("Starting camera monitoring...")
 
     while True:
@@ -95,6 +213,9 @@ async def monitor_cameras():
             streams = stream_handler.get_all_streams()
 
             monitor_cameras.frame_count = getattr(monitor_cameras, 'frame_count', 0) + 1
+            if monitor_cameras.frame_count % 300 == 0:
+                import gc
+                gc.collect()
 
             latest_sensors = sensor_manager.get_latest_data()
             physical_smoke_detected = False
@@ -111,20 +232,26 @@ async def monitor_cameras():
 
                 result = await asyncio.to_thread(detector.detect, frame, camera_id)
 
-                camera = db.query(Camera).filter(Camera.id == camera_id).first()
+                if not hasattr(monitor_cameras, '_cam_cache') or monitor_cameras.frame_count % 60 == 0:
+                    monitor_cameras._cam_cache = {c.id: c for c in db.query(Camera).all()}
+                camera = monitor_cameras._cam_cache.get(camera_id)
+                if not camera:
+                    camera = db.query(Camera).filter(Camera.id == camera_id).first()
                 if not camera:
                     continue
 
-                # ── GPIO fire reaction: LED (Level 1=Green, 2=Blue, 3=Red) + Buzzer ──
+                # ── GPIO fire reaction: LED (Blue=Small, Green=Medium, Red=Critical) + Buzzer ──
                 if gpio_controller.initialized:
                     detected_level = result.get('fire_level', 0)
+                    now_ts = time.time()
                     if detected_level >= 1:
-                        _gpio_fire_streak += 1
-                        if _gpio_fire_streak >= _GPIO_DEBOUNCE_FRAMES:
-                            gpio_controller.set_fire_level(detected_level)
+                        _gpio_last_fire_time = now_ts
+                        gpio_controller.set_fire_level(detected_level)
                     else:
-                        _gpio_fire_streak = 0
-                        gpio_controller.set_fire_level(0)  # Safe: all LEDs and buzzer off
+                        # Only return to safe level 0 after hold duration expires
+                        if now_ts - _gpio_last_fire_time > _GPIO_HOLD_SECONDS:
+                            if gpio_controller.current_level != 0:
+                                gpio_controller.set_fire_level(0)
                 # ───────────────────────────────────────────────────────────────────
 
                 if camera_id not in consecutive_detections:
@@ -171,15 +298,27 @@ async def monitor_cameras():
                             image_filename = f"{camera_id}_{timestamp_str}.jpg"
                             image_path = os.path.join(image_dir, image_filename)
 
+                            video_filename = f"{camera_id}_{timestamp_str}.mp4"
+                            video_path = os.path.join(image_dir, video_filename)
+
                             annotated_frame = detector.draw_detections(frame, result)
                             await asyncio.to_thread(cv2.imwrite, image_path, annotated_frame)
 
-                            # Include sensor verification data in metadata
+                            # Launch 10-second video recording starting from fire detection trigger
+                            threading.Thread(
+                                target=record_fire_clip,
+                                args=(camera_id, annotated_frame.copy(), stream, video_path, 10.0, 15),
+                                daemon=True
+                            ).start()
+
+                            # Include sensor verification data and video metadata
                             detection_meta = result['metadata'].copy() if result.get('metadata') else {}
                             sensor_data = sensor_manager.get_latest_data()
                             verification_score = sensor_manager.get_verification_score()
                             detection_meta['sensor_data'] = sensor_data
                             detection_meta['sensor_verification_score'] = verification_score
+                            detection_meta['video_path'] = video_path
+                            detection_meta['video_duration'] = 10.0
 
                             detection = Detection(
                                 camera_id=camera_id,
@@ -187,6 +326,7 @@ async def monitor_cameras():
                                 confidence=result['confidence'],
                                 bbox_area=result['bbox_area'],
                                 image_path=image_path,
+                                video_path=video_path,
                                 detection_metadata=detection_meta
                             )
 
@@ -265,7 +405,8 @@ async def monitor_cameras():
                         if sensor_id in sensor_manager.sensors:
                             sensor_manager.sensors[sensor_id].current_state['status'] = 'nominal'
 
-            await asyncio.sleep(0.15)
+            # Optimized sleep for Raspberry Pi: ~3.5 evaluations/sec balances real-time detection with low CPU/heat
+            await asyncio.sleep(0.28)
 
         except Exception as e:
             logger.error(f"Error in monitoring loop: {e}")
@@ -281,6 +422,15 @@ async def lifespan(app: FastAPI):
 
     init_db()
     logger.info("Database initialized")
+
+    # Ensure any legacy 'viewer' role is upgraded to 'operator'
+    try:
+        mig_db = SessionLocal()
+        mig_db.query(User).filter(User.role == "viewer").update({"role": "operator"})
+        mig_db.commit()
+        mig_db.close()
+    except Exception as e:
+        logger.warning(f"Role migration notice: {e}")
 
     set_stream_handler(stream_handler)
 
@@ -321,8 +471,10 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://192.168.1.12:3000",  # your PC's LAN IP
+        "http://192.168.1.12:3000",
+        "http://192.168.1.20:3000",
     ],
+    allow_origin_regex=r"^https?://.*$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -433,32 +585,44 @@ def create_sensor(sensor: SensorCreate):
 @app.get("/live/{camera_id}")
 async def live_feed(camera_id: int):
     logger.debug(f"Live feed requested for camera {camera_id}")
-    stream = stream_handler.get_stream(camera_id)
+    stream = stream_handler.get_stream(camera_id) if stream_handler else None
 
-    if not stream:
-        return {"error": "Camera stream not found"}
+    if not stream or not stream.is_active() or stream.get_frame() is None:
+        raise HTTPException(status_code=503, detail="Camera feed offline or disconnected")
 
     def generate_frames():
         import time as _time
         TARGET_FPS = 10  # Limit to 10 FPS to save CPU/bandwidth
         frame_interval = 1.0 / TARGET_FPS
+        none_count = 0
 
         while True:
             loop_start = _time.time()
             frame = stream.get_frame(timeout=1.0)
 
             if frame is None:
-                _time.sleep(0.05)
+                none_count += 1
+                if none_count > 15:
+                    break
+                _time.sleep(0.1)
                 continue
+            none_count = 0
 
-            display_frame = cv2.resize(frame, (640, 480))
+            # Preserve native aspect ratio (16:9 widescreen or 4:3) so camera is never distorted or cropped
+            fh, fw = frame.shape[:2]
+            target_w = 640 if _is_raspberry_pi else (960 if fw >= 1280 else 640)
+            target_h = int(target_w * fh / fw) if fw > 0 else 360
+            display_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
             # Use cached detection results from monitor_cameras instead of re-running AI
             cached = _cached_detections.get(camera_id)
             if cached and cached.get('fire_detected') and len(cached.get('bounding_boxes', [])) > 0:
                 display_frame = detector.draw_detections(display_frame, cached)
 
-            ret, buffer = cv2.imencode('.jpg', display_frame, [cv2.IMWRITE_JPEG_QUALITY, 40])
+            ret, buffer = cv2.imencode('.jpg', display_frame, [
+                cv2.IMWRITE_JPEG_QUALITY, 40,
+                cv2.IMWRITE_JPEG_OPTIMIZE, 0
+            ])
             if not ret:
                 continue
 

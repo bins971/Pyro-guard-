@@ -12,6 +12,13 @@ logger = logging.getLogger(__name__)
 IS_LINUX = platform.system() == "Linux"
 CAMERA_BACKEND = cv2.CAP_V4L2 if IS_LINUX else cv2.CAP_DSHOW
 
+if IS_LINUX:
+    try:
+        cv2.setNumThreads(2)
+        cv2.ocl.setUseOpenCL(False)
+    except Exception:
+        pass
+
 
 class StreamHandler:
 
@@ -49,26 +56,29 @@ class StreamHandler:
                 self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             elif isinstance(self.source, int) or str(self.source).isdigit():
                 cam_index = int(self.source)
-                self.cap = cv2.VideoCapture(cam_index, CAMERA_BACKEND)
-                if not self.cap.isOpened():
-                    logger.warning(f"Backend {CAMERA_BACKEND} failed for camera {cam_index}, trying default")
-                    self.cap = cv2.VideoCapture(cam_index)
+                import os
+                if os.path.exists("/dev") and not os.path.exists(f"/dev/video{cam_index}"):
+                    # Physical camera hardware not plugged into Raspberry Pi / Linux
+                    return False
+                self.cap = cv2.VideoCapture(cam_index)
             else:
                 self.cap = cv2.VideoCapture(self.source)
 
-            if not self.cap.isOpened():
+            if not self.cap or not self.cap.isOpened():
                 logger.error(f"Could not open video source: {self.source}")
                 return False
 
             if not self._is_rtsp:
-                # Set MJPG codec first to prevent USB 2K/1080p cameras from defaulting
-                # to monochrome YUY2/NV12 stride wrap (3x3 tiled black and white glitch)
+                # Set width and height first to engage native 16:9 widescreen full FoV sensor
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
                 try:
                     self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 except Exception as e:
                     logger.debug(f"Could not set MJPG codec: {e}")
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+                actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                logger.info(f"Camera opened with hardware resolution: {actual_w:.0f}x{actual_h:.0f} (Full FoV)")
 
             return True
         except Exception as e:
@@ -77,9 +87,7 @@ class StreamHandler:
 
     def start(self) -> bool:
         self._is_rtsp = self._is_rtsp_source()
-
-        if not self._open_capture():
-            return False
+        opened = self._open_capture()
 
         self.is_running = True
         self._consecutive_failures = 0
@@ -87,7 +95,10 @@ class StreamHandler:
         self.thread.start()
 
         source_type = "RTSP" if self._is_rtsp else "Local"
-        logger.info(f"Stream started [{source_type}]: {self.source}")
+        if opened:
+            logger.info(f"Stream started [{source_type}]: {self.source}")
+        else:
+            logger.info(f"Stream initialized [{source_type}]: {self.source} (Waiting for hardware connection)")
         return True
 
     def stop(self):
@@ -100,6 +111,9 @@ class StreamHandler:
             self.cap.release()
             self.cap = None
 
+        with self.frame_lock:
+            self.latest_frame = None
+
         logger.info(f"Stream stopped: {self.source}")
 
     def _reconnect(self):
@@ -107,27 +121,33 @@ class StreamHandler:
             self.cap.release()
             self.cap = None
 
-        backoff = min(30, 2 ** min(self._consecutive_failures // self._max_failures_before_reconnect, 4))
-        logger.warning(f"Reconnecting to {self.source} in {backoff}s...")
+        backoff = min(15, 2 ** min(self._consecutive_failures // 5, 3))
         time.sleep(backoff)
 
         if self._open_capture():
             self._consecutive_failures = 0
             logger.info(f"Reconnected to {self.source}")
         else:
-            logger.error(f"Reconnection failed for {self.source}")
+            logger.debug(f"Reconnection attempt pending for {self.source}")
 
     def _capture_frames(self):
         while self.is_running:
             try:
                 if self.cap is None or not self.cap.isOpened():
-                    if self._is_rtsp:
-                        self._reconnect()
-                        continue
+                    with self.frame_lock:
+                        self.latest_frame = None
+                    # Progressive backoff for offline cameras: avoid spinning CPU in tight V4L2 probe loops
+                    backoff = min(8.0, 2.5 + (self._consecutive_failures * 1.5))
+                    slept = 0.0
+                    while slept < backoff and self.is_running:
+                        time.sleep(0.2)
+                        slept += 0.2
+                    if self._open_capture():
+                        logger.info(f"Camera connected and streaming: {self.source}")
+                        self._consecutive_failures = 0
                     else:
-                        logger.error(f"Local camera lost: {self.source}")
-                        time.sleep(1)
-                        continue
+                        self._consecutive_failures += 1
+                    continue
 
                 # Skip frames directly on the buffer using grab (no decoding overhead)
                 if self.frame_skip > 1:
@@ -139,12 +159,14 @@ class StreamHandler:
 
                 if not ret:
                     self._consecutive_failures += 1
-                    if self._consecutive_failures >= self._max_failures_before_reconnect:
-                        if self._is_rtsp:
-                            self._reconnect()
-                        else:
-                            logger.warning(f"Frame read failed for {self.source} ({self._consecutive_failures} failures)")
-                    time.sleep(0.05)
+                    if self._consecutive_failures >= 3:
+                        with self.frame_lock:
+                            self.latest_frame = None
+                        if self.cap:
+                            self.cap.release()
+                            self.cap = None
+                        logger.warning(f"Camera connection lost: {self.source}")
+                    time.sleep(0.5)
                     continue
 
                 self._consecutive_failures = 0
@@ -166,10 +188,10 @@ class StreamHandler:
                 logger.error(f"Error in capture thread: {e}")
                 time.sleep(0.1)
 
-    def get_frame(self, timeout: float = 1.0) -> Optional[np.ndarray]:
+    def get_frame(self, timeout: float = 1.0, copy: bool = False) -> Optional[np.ndarray]:
         with self.frame_lock:
             if self.latest_frame is not None:
-                return self.latest_frame.copy()
+                return self.latest_frame.copy() if copy else self.latest_frame
             return None
 
     def read_frames(self) -> Generator[np.ndarray, None, None]:
@@ -182,7 +204,12 @@ class StreamHandler:
         return self.fps
 
     def is_active(self) -> bool:
-        return self.is_running and self.cap is not None and self.cap.isOpened()
+        return (
+            self.is_running
+            and self.cap is not None
+            and self.cap.isOpened()
+            and self.latest_frame is not None
+        )
 
 
 class MultiStreamHandler:
@@ -195,10 +222,9 @@ class MultiStreamHandler:
             self.remove_stream(camera_id)
 
         handler = StreamHandler(source)
-        if handler.start():
-            self.streams[camera_id] = handler
-            return True
-        return False
+        handler.start()
+        self.streams[camera_id] = handler
+        return True
 
     def remove_stream(self, camera_id: int):
         if camera_id in self.streams:

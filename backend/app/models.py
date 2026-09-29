@@ -40,6 +40,7 @@ class Detection(Base):
 
     image_path = Column(String(500))
     image_url = Column(String(1000))
+    video_path = Column(String(500))
 
     detection_metadata = Column(JSON)
 
@@ -77,7 +78,7 @@ class User(Base):
     username = Column(String(50), unique=True, index=True, nullable=False)
     hashed_password = Column(String(200), nullable=False)
     is_admin = Column(Boolean, default=False)
-    role = Column(String(20), default="operator")  # "admin", "operator", "viewer"
+    role = Column(String(20), default="operator")  # "admin", "operator"
     is_approved = Column(Boolean, default=True)  # True for approved users, False for pending registration
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

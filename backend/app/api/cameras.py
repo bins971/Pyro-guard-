@@ -29,10 +29,30 @@ def create_camera(camera: CameraCreate, db: Session = Depends(get_db)):
     return db_camera
 
 
+def _enrich_camera(cam: Camera) -> dict:
+    is_online = False
+    if stream_handler and cam.is_active:
+        stream = stream_handler.get_stream(cam.id)
+        if stream and stream.is_active():
+            is_online = True
+
+    cam_name = "Camera 1" if cam.name and "usb" in cam.name.lower() else cam.name
+    return {
+        "id": cam.id,
+        "name": cam_name,
+        "location": cam.location,
+        "rtsp_url": cam.rtsp_url,
+        "is_active": cam.is_active,
+        "is_online": is_online,
+        "created_at": cam.created_at,
+        "updated_at": cam.updated_at
+    }
+
+
 @router.get("/", response_model=List[CameraSchema])
 def list_cameras(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     cameras = db.query(Camera).offset(skip).limit(limit).all()
-    return cameras
+    return [_enrich_camera(c) for c in cameras]
 
 
 @router.get("/{camera_id}", response_model=CameraSchema)
@@ -40,7 +60,7 @@ def get_camera(camera_id: int, db: Session = Depends(get_db)):
     camera = db.query(Camera).filter(Camera.id == camera_id).first()
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
-    return camera
+    return _enrich_camera(camera)
 
 
 @router.put("/{camera_id}", response_model=CameraSchema)

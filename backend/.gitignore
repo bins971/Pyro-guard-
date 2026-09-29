@@ -54,5 +54,8 @@ detections/
 .DS_Store
 Thumbs.db
 
-# YOLO config
+# YOLO config & Training artifacts
 yolo_config/
+runs/
+models/*backup*
+models/*_old_*

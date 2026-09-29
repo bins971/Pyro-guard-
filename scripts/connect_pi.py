@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 USERNAMES = ["pyroguard", "pi"]
 PASSWORDS = ["pyroguard041505", "raspberry"]
 
-KNOWN_IPS = ["192.168.1.19", "192.168.1.2", "192.168.137.100", "192.168.1.17"]
+KNOWN_IPS = ["192.168.1.21", "192.168.1.15", "192.168.1.19", "192.168.1.2", "192.168.137.100", "192.168.1.17"]
 
 def test_port(ip, port=22, timeout=0.6):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -98,7 +98,7 @@ def find_pi():
     return None
 
 def update_frontend_env(pi_ip):
-    env_path = os.path.join(os.path.dirname(__file__), "frontend", ".env.local")
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", ".env.local"))
     if os.path.exists(env_path):
         with open(env_path, "r") as f:
             lines = f.readlines()

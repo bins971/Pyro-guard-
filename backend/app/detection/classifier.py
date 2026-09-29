@@ -95,9 +95,9 @@ class FireLevelClassifier:
     def get_level_description(self, level: int) -> str:
         descriptions = {
             0: "No Fire",
-            1: "Small Fire",
-            2: "Medium Fire",
-            3: "Large/Critical Fire"
+            1: "Low Fire",
+            2: "Moderate Fire",
+            3: "Severe Fire"
         }
         return descriptions.get(level, "Unknown")
     

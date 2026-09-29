@@ -50,6 +50,10 @@ class GPIOController:
         if not self.initialized:
             return
 
+        # Avoid redundant toggles if state has not changed
+        if self.current_level == level:
+            return
+
         # Stop any existing blink thread
         self._stop_blink()
 
@@ -58,33 +62,33 @@ class GPIOController:
         try:
             if level == 0:
                 # ── Safe (No Fire): All LEDs OFF, Buzzer OFF ──
-                GPIO.output(PIN_LED_GREEN, GPIO.LOW)
                 GPIO.output(PIN_LED_BLUE, GPIO.LOW)
+                GPIO.output(PIN_LED_GREEN, GPIO.LOW)
                 GPIO.output(PIN_LED_RED, GPIO.LOW)
                 GPIO.output(PIN_BUZZER, GPIO.LOW)
 
             elif level == 1:
-                # ── Small Fire: GREEN LED ON + Buzzer ON ──
-                GPIO.output(PIN_LED_GREEN, GPIO.HIGH)
-                GPIO.output(PIN_LED_BLUE, GPIO.LOW)
+                # ── Low Fire: BLUE LED ON ──
+                GPIO.output(PIN_LED_BLUE, GPIO.HIGH)
+                GPIO.output(PIN_LED_GREEN, GPIO.LOW)
                 GPIO.output(PIN_LED_RED, GPIO.LOW)
-                GPIO.output(PIN_BUZZER, GPIO.HIGH)
+                GPIO.output(PIN_BUZZER, GPIO.LOW)
 
             elif level == 2:
-                # ── Medium Fire: BLUE LED ON + Buzzer ON ──
-                GPIO.output(PIN_LED_GREEN, GPIO.LOW)
-                GPIO.output(PIN_LED_BLUE, GPIO.HIGH)
+                # ── Moderate Fire: GREEN LED ON + Buzzer ON ──
+                GPIO.output(PIN_LED_BLUE, GPIO.LOW)
+                GPIO.output(PIN_LED_GREEN, GPIO.HIGH)
                 GPIO.output(PIN_LED_RED, GPIO.LOW)
                 GPIO.output(PIN_BUZZER, GPIO.HIGH)
 
             elif level >= 3:
-                # ── Critical Fire: RED LED ON (blinking) + Buzzer ON ──
-                GPIO.output(PIN_LED_GREEN, GPIO.LOW)
+                # ── Severe Fire: RED LED ON (blinking) + Buzzer ON ──
                 GPIO.output(PIN_LED_BLUE, GPIO.LOW)
+                GPIO.output(PIN_LED_GREEN, GPIO.LOW)
                 GPIO.output(PIN_BUZZER, GPIO.HIGH)
                 self._start_blink(PIN_LED_RED, interval=0.2)
 
-            logger.info(f"GPIO indicators set to fire level {level}")
+            logger.info(f"GPIO indicators updated: fire level {level} (Low={level==1}, Moderate={level==2}, Severe={level>=3})")
         except Exception as e:
             logger.error(f"GPIO set_fire_level error: {e}")
 
