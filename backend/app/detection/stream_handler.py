@@ -69,13 +69,16 @@ class StreamHandler:
                 return False
 
             if not self._is_rtsp:
-                # Set width and height first to engage native 16:9 widescreen full FoV sensor
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+                # Force buffer size = 1 to eliminate any frame latency/lag
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                # Set FOURCC MJPG FIRST so Linux V4L2 uses hardware-compressed frames
                 try:
                     self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 except Exception as e:
                     logger.debug(f"Could not set MJPG codec: {e}")
+                # Set native 16:9 widescreen streaming resolution
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
                 actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
                 actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
                 logger.info(f"Camera opened with hardware resolution: {actual_w:.0f}x{actual_h:.0f} (Full FoV)")

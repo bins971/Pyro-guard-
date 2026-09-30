@@ -413,8 +413,9 @@ async def monitor_cameras():
                         if sensor_id in sensor_manager.sensors:
                             sensor_manager.sensors[sensor_id].current_state['status'] = 'nominal'
 
-            # AI inference provides natural throttling; short yield prevents delaying detection
-            await asyncio.sleep(0.05)
+            # Pace AI inference on Raspberry Pi: ~3.5 FPS inference prevents 100% CPU lock, thermal throttling, and frame drop
+            sleep_interval = 0.20 if _is_raspberry_pi else 0.05
+            await asyncio.sleep(sleep_interval)
 
         except Exception as e:
             logger.error(f"Error in monitoring loop: {e}")
@@ -600,7 +601,7 @@ async def live_feed(camera_id: int):
 
     def generate_frames():
         import time as _time
-        TARGET_FPS = 10  # Limit to 10 FPS to save CPU/bandwidth
+        TARGET_FPS = 15  # 15 FPS smooth stream for surveillance
         frame_interval = 1.0 / TARGET_FPS
         none_count = 0
 
@@ -612,7 +613,7 @@ async def live_feed(camera_id: int):
                 none_count += 1
                 if none_count > 15:
                     break
-                _time.sleep(0.1)
+                _time.sleep(0.05)
                 continue
             none_count = 0
 
@@ -620,7 +621,10 @@ async def live_feed(camera_id: int):
             fh, fw = frame.shape[:2]
             target_w = 640 if _is_raspberry_pi else (960 if fw >= 1280 else 640)
             target_h = int(target_w * fh / fw) if fw > 0 else 360
-            display_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            if fw == target_w and fh == target_h:
+                display_frame = frame
+            else:
+                display_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
             # Use active overlay cache with persistence to ensure bounding boxes display smoothly
             overlay_info = _active_fire_overlays.get(camera_id)
@@ -632,7 +636,7 @@ async def live_feed(camera_id: int):
                     display_frame = detector.draw_detections(display_frame, cached)
 
             ret, buffer = cv2.imencode('.jpg', display_frame, [
-                cv2.IMWRITE_JPEG_QUALITY, 40,
+                cv2.IMWRITE_JPEG_QUALITY, 35,
                 cv2.IMWRITE_JPEG_OPTIMIZE, 0
             ])
             if not ret:
