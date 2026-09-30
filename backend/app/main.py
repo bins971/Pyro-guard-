@@ -239,11 +239,35 @@ async def monitor_cameras():
                 if not camera:
                     continue
 
+                if camera_id not in consecutive_detections:
+                    consecutive_detections[camera_id] = 0
+
+                is_fire_legit = result['fire_detected']
+                required_frames = max(1, settings.DETECTION_PERSISTENCE_FRAMES)
+
+                if is_fire_legit:
+                    consecutive_detections[camera_id] += 1
+                    consecutive_detections[camera_id] = min(consecutive_detections[camera_id], required_frames * 2)
+                else:
+                    if camera_id in consecutive_detections:
+                        consecutive_detections[camera_id] = max(0, consecutive_detections[camera_id] - 1)
+                        if consecutive_detections[camera_id] == 0:
+                            del consecutive_detections[camera_id]
+
+                # Cache the result for the live feed
+                _cached_detections[camera_id] = result
+                is_confirmed_fire = is_fire_legit and (consecutive_detections.get(camera_id, 0) >= required_frames)
+                if is_confirmed_fire and len(result.get('bounding_boxes', [])) > 0:
+                    _active_fire_overlays[camera_id] = {
+                        'result': result,
+                        'expires_at': time.time() + 1.8
+                    }
+
                 # ── GPIO fire reaction: LED (Blue=Small, Green=Medium, Red=Critical) + Buzzer ──
                 if gpio_controller.initialized:
                     detected_level = result.get('fire_level', 0)
                     now_ts = time.time()
-                    if detected_level >= 1:
+                    if detected_level >= 1 and is_confirmed_fire:
                         _gpio_last_fire_time = now_ts
                         gpio_controller.set_fire_level(detected_level)
                     else:
@@ -252,25 +276,8 @@ async def monitor_cameras():
                             if gpio_controller.current_level != 0:
                                 gpio_controller.set_fire_level(0)
                 # ───────────────────────────────────────────────────────────────────
-
-                if camera_id not in consecutive_detections:
-                    consecutive_detections[camera_id] = 0
-
-                is_fire_legit = result['fire_detected']
-                required_frames = max(1, settings.DETECTION_PERSISTENCE_FRAMES)
-
-                # Cache the result for the live feed overlay
-                _cached_detections[camera_id] = result
-                if is_fire_legit and len(result.get('bounding_boxes', [])) > 0:
-                    _active_fire_overlays[camera_id] = {
-                        'result': result,
-                        'expires_at': time.time() + 1.8
-                    }
-
-                if is_fire_legit:
-                    consecutive_detections[camera_id] += 1
-                    consecutive_detections[camera_id] = min(consecutive_detections[camera_id], required_frames * 2)
                     
+                if is_confirmed_fire:
                     if camera.ptz_enabled and 'bounding_boxes' in result and len(result['bounding_boxes']) > 0:
                         biggest_box = max(result['bounding_boxes'], key=lambda b: (b['bbox'][2]-b['bbox'][0])*(b['bbox'][3]-b['bbox'][1]))
                         h, w = frame.shape[:2]
@@ -279,14 +286,8 @@ async def monitor_cameras():
                     # Notify sensors about fire detection so they react
                     sensor_manager.notify_fire_event(result['fire_level'], result['confidence'])
                     logger.debug(f"Camera {camera_id}: fire detected (consecutive={consecutive_detections[camera_id]}/{required_frames}) conf={result['confidence']:.2f} level={result['fire_level']}")
-                else:
-                    if camera_id in consecutive_detections:
-                        consecutive_detections[camera_id] = max(0, consecutive_detections[camera_id] - 1)
-                        if consecutive_detections[camera_id] == 0:
-                            del consecutive_detections[camera_id]
 
-                if camera_id in consecutive_detections and consecutive_detections[camera_id] >= required_frames:
-                    if result['fire_detected'] and result['fire_level'] > 0:
+                if is_confirmed_fire and result['fire_level'] > 0:
                         current_time = datetime.now()
                         last_save = last_save_time.get(camera_id)
                         if last_save is not None and (current_time - last_save).total_seconds() < 30:

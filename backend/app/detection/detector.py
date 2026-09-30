@@ -71,18 +71,19 @@ class FlameVerifier:
         s_ch = hsv[:, :, 1]
         v_ch = hsv[:, :, 2]
 
-        # 1. Warm flame combustion color (Red distinctly higher than Blue, warm saturation)
+        # 1. Warm flame combustion color (genuine fire has distinct orange/yellow warmth with G >= 70)
         flame_mask = (
-            (r >= 120) &
-            (r >= b + 20) &
-            (v_ch >= 90) &
-            (s_ch >= 25)
+            (r >= 135) &
+            (g >= 70) &
+            (r >= b + 25) &
+            (v_ch >= 95) &
+            (s_ch >= 30)
         )
 
         # 2. Emissive combustion core (hot luminous white/yellow core characteristic of real flames)
         core_mask = (
-            (r >= 180) &
-            (g >= 120) &
+            (r >= 190) &
+            (g >= 130) &
             (v_ch >= 160) &
             (r >= b + 15)
         )
@@ -108,9 +109,9 @@ class FlameVerifier:
             'mean_bgr': (float(b.mean()), float(g.mean()), float(r.mean()))
         }
 
-        # Real flames or fire test targets require warm combustion pixels, luminous core, or gas flame
-        # Any genuine flame (candle, lighter, fire) exhibits at least a few combustion or core pixels
-        is_valid = (flame_px >= 2) or (core_px >= 2) or (gas_px >= 2)
+        # Real flames require genuine combustion pixels, luminous core, or gas flame.
+        # Static pure-red objects (like Christmas balls or red cloth) lack yellow/orange combustion or core.
+        is_valid = (flame_px >= 3 and (core_px >= 1 or flame_px >= 6)) or (core_px >= 2) or (gas_px >= 2)
 
         return is_valid, flame_ratio, stats
 
@@ -164,13 +165,17 @@ class FlameVerifier:
                     break
 
             if matched_track is None:
-                # Brand new detection candidate: allow immediate reaction on first frames
+                # Brand new detection candidate: track its center and motion
                 matched_track = {
                     'center': (center_x, center_y),
                     'streak': 1,
                     'flicker_history': [flicker_score]
                 }
                 tracks.append(matched_track)
+                # If there is already a previous frame for this camera and this candidate is essentially stationary,
+                # reject it immediately to prevent initial blip false alerts on stationary decor/toys/lamps
+                if prev_gray is not None and flicker_score < min_flicker_score * 0.5:
+                    return False, flicker_score
                 return True, flicker_score
             else:
                 matched_track['center'] = (center_x, center_y)
@@ -180,8 +185,8 @@ class FlameVerifier:
                     matched_track['flicker_history'].pop(0)
 
                 avg_flicker = float(np.mean(matched_track['flicker_history']))
-                # Static objects (toys, rolls, walls, lamps) that persist with zero flicker over several frames are suppressed
-                if matched_track['streak'] >= 3 and avg_flicker < min_flicker_score:
+                # Static objects (Christmas ornaments, toys, rolls, walls, lamps) that persist with zero flicker are suppressed
+                if matched_track['streak'] >= 2 and avg_flicker < min_flicker_score:
                     logger.debug(
                         f"Cam {camera_id}: Static false positive suppressed "
                         f"(streak={matched_track['streak']}, avg_flicker={avg_flicker:.2f} < {min_flicker_score})"
