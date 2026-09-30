@@ -401,23 +401,26 @@ class FireDetector:
                             logger.debug(f"Cam {camera_id}: Fire candidate rejected by chrominance check (ratio={flame_ratio:.2f})")
                             continue
 
-                        # If confidence is below standard threshold (e.g. 0.14 <= conf < 0.28 for close-up/lighter flames),
-                        # require strong physical combustion indicators:
-                        # (either blue butane gas base, warm flame mantle, or emissive core with combustion halo)
-                        if confidence < fire_thresh:
-                            gas_px = flame_stats.get('gas_px', 0)
-                            flame_px = flame_stats.get('flame_px', 0)
-                            core_px = flame_stats.get('core_px', 0)
-                            has_combustion_proof = (
-                                (gas_px >= 10) or
-                                (flame_px >= 15 and flame_ratio >= 0.05) or
-                                (core_px >= 20 and (flame_px >= 3 or gas_px >= 3))
-                            )
-                            if not has_combustion_proof:
-                                continue
+                        # Determine combustion strength for low-confidence handling
+                        gas_px = flame_stats.get('gas_px', 0)
+                        flame_px = flame_stats.get('flame_px', 0)
+                        core_px = flame_stats.get('core_px', 0)
+                        has_strong_combustion = (
+                            (gas_px >= 10) or
+                            (flame_px >= 15 and flame_ratio >= 0.05) or
+                            (core_px >= 20 and (flame_px >= 3 or gas_px >= 3))
+                        )
 
-                        # Verify dynamic flicker if enabled
-                        if settings.ENABLE_FLICKER_VERIFICATION:
+                        # If confidence is below standard threshold (e.g. 0.14 <= conf < 0.28 for close-up/lighter flames),
+                        # require strong physical combustion indicators
+                        if confidence < fire_thresh and not has_strong_combustion:
+                            continue
+
+                        # Flicker check: only apply when combustion is NOT strongly confirmed.
+                        # A lighter or torch flame held still will produce zero flicker between frames
+                        # (especially at 700ms/frame on Pi CPU), but the chrominance check already
+                        # guarantees genuine combustion emissivity, so skip flicker for strong detections.
+                        if settings.ENABLE_FLICKER_VERIFICATION and not has_strong_combustion:
                             is_dynamic, flicker_score = self.verifier.check_temporal_flicker(
                                 camera_id, [x1, y1, x2, y2], frame_gray, settings.MIN_FLICKER_SCORE
                             )
@@ -488,9 +491,14 @@ class FireDetector:
 
                         flame_crop = frame[max(0, int(gy1)):min(frame_height, int(gy2)), max(0, int(gx1)):min(frame_width, int(gx2))]
                         if flame_crop.size > 0:
-                            is_valid, _, _ = self.verifier.verify_flame_chrominance(flame_crop, is_small_fire=True)
+                            is_valid, _, fst = self.verifier.verify_flame_chrominance(flame_crop, is_small_fire=True)
                             if is_valid:
-                                if settings.ENABLE_FLICKER_VERIFICATION:
+                                # For hotspot slicing, combustion is always strong enough to skip flicker
+                                hot_gas = fst.get('gas_px', 0)
+                                hot_flame = fst.get('flame_px', 0)
+                                hot_core = fst.get('core_px', 0)
+                                hot_strong = (hot_gas >= 10) or (hot_flame >= 15) or (hot_core >= 20)
+                                if settings.ENABLE_FLICKER_VERIFICATION and not hot_strong:
                                     is_dynamic, _ = self.verifier.check_temporal_flicker(
                                         camera_id, [gx1, gy1, gx2, gy2], frame_gray, settings.MIN_FLICKER_SCORE
                                     )
