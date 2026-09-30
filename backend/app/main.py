@@ -83,6 +83,7 @@ _GPIO_HOLD_SECONDS = 3.5  # Seconds to hold LED indicator ON after detection
 
 # Cache detection results so the live feed can overlay them without re-running AI
 _cached_detections = {}
+_active_fire_overlays = {}  # camera_id -> {'result': dict, 'expires_at': float}
 
 
 def record_fire_clip(camera_id: int, start_frame: cv2.typing.MatLike, stream, output_path: str, duration_sec: float = 10.0, fps: int = 15):
@@ -225,7 +226,9 @@ async def monitor_cameras():
                     break
 
             for camera_id, stream in streams.items():
-                frame = stream.get_frame(timeout=0.5)
+                if not stream.is_active():
+                    continue
+                frame = stream.get_frame(timeout=0.1)
 
                 if frame is None:
                     continue
@@ -258,10 +261,15 @@ async def monitor_cameras():
                     consecutive_detections[camera_id] = 0
 
                 is_fire_legit = result['fire_detected']
-                required_frames = settings.DETECTION_PERSISTENCE_FRAMES
+                required_frames = max(1, settings.DETECTION_PERSISTENCE_FRAMES)
 
                 # Cache the result for the live feed overlay
                 _cached_detections[camera_id] = result
+                if is_fire_legit and len(result.get('bounding_boxes', [])) > 0:
+                    _active_fire_overlays[camera_id] = {
+                        'result': result,
+                        'expires_at': time.time() + 1.8
+                    }
 
                 if is_fire_legit:
                     consecutive_detections[camera_id] += 1
@@ -405,8 +413,8 @@ async def monitor_cameras():
                         if sensor_id in sensor_manager.sensors:
                             sensor_manager.sensors[sensor_id].current_state['status'] = 'nominal'
 
-            # Optimized sleep for Raspberry Pi: ~3.5 evaluations/sec balances real-time detection with low CPU/heat
-            await asyncio.sleep(0.28)
+            # AI inference provides natural throttling; short yield prevents delaying detection
+            await asyncio.sleep(0.05)
 
         except Exception as e:
             logger.error(f"Error in monitoring loop: {e}")
@@ -614,10 +622,14 @@ async def live_feed(camera_id: int):
             target_h = int(target_w * fh / fw) if fw > 0 else 360
             display_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-            # Use cached detection results from monitor_cameras instead of re-running AI
-            cached = _cached_detections.get(camera_id)
-            if cached and cached.get('fire_detected') and len(cached.get('bounding_boxes', [])) > 0:
-                display_frame = detector.draw_detections(display_frame, cached)
+            # Use active overlay cache with persistence to ensure bounding boxes display smoothly
+            overlay_info = _active_fire_overlays.get(camera_id)
+            if overlay_info and _time.time() < overlay_info['expires_at'] and overlay_info['result'].get('bounding_boxes'):
+                display_frame = detector.draw_detections(display_frame, overlay_info['result'])
+            else:
+                cached = _cached_detections.get(camera_id)
+                if cached and cached.get('fire_detected') and len(cached.get('bounding_boxes', [])) > 0:
+                    display_frame = detector.draw_detections(display_frame, cached)
 
             ret, buffer = cv2.imencode('.jpg', display_frame, [
                 cv2.IMWRITE_JPEG_QUALITY, 40,

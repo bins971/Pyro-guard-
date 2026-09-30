@@ -3,7 +3,22 @@ import sys
 import paramiko
 from pathlib import Path
 
-PI_IP = "192.168.1.21"
+import socket
+
+PI_IP = "10.112.96.27"
+for h in ["pyroguard.local", "10.112.96.27", "192.168.1.21"]:
+    try:
+        resolved = socket.gethostbyname(h)
+        s = socket.socket()
+        s.settimeout(0.8)
+        if s.connect_ex((resolved, 22)) == 0:
+            PI_IP = resolved
+            s.close()
+            break
+        s.close()
+    except Exception:
+        pass
+
 PI_USER = "pyroguard"
 PI_PASS = "pyroguard041505"
 
@@ -56,6 +71,17 @@ upload_dir(LOCAL_APP, REMOTE_APP)
 print("  -> Uploading: backend/.env")
 sftp.put(str(LOCAL_ROOT / "backend" / ".env"), f"{REMOTE_BASE}/backend/.env")
 sftp.close()
+
+# Deactivate non-existent Camera 2 (id=1) in Pi database so it stops timing out and spamming V4L2
+deactivate_cam_cmd = """python3 -c "
+import sqlite3
+conn = sqlite3.connect('/home/pyroguard/pyro-guard/backend/pyroguard.db')
+conn.execute('UPDATE cameras SET is_active=0 WHERE id=1')
+conn.commit()
+print('Deactivated unused Camera 2 in database.')
+" """
+stdin, stdout, stderr = client.exec_command(deactivate_cam_cmd)
+print(stdout.read().decode().strip())
 
 # Restart pyroguard systemd service on Pi
 print("\n[*] Restarting pyroguard.service on Pi...")

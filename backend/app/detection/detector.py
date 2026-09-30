@@ -20,9 +20,46 @@ class FlameVerifier:
         self.tracked_objects: Dict[int, List[Dict[str, Any]]] = {}
         self.lock = threading.Lock()
 
+    def is_artificial_light(self, crop: np.ndarray) -> bool:
+        """Reject artificial ceiling lights, fluorescent tubes, LED fixtures, and window glare."""
+        if crop is None or crop.size == 0:
+            return False
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        s_ch = hsv[:, :, 1]
+        v_ch = hsv[:, :, 2]
+        b, g, r = cv2.split(crop.astype(np.int32))
+
+        bright_mask = v_ch >= 150
+        num_bright = int(np.sum(bright_mask))
+        if num_bright < 10:
+            return False
+
+        # Artificial lights have very low saturation (S < 45) or balanced RGB (r ~ g ~ b)
+        desat_bright = bright_mask & (s_ch < 45)
+        desat_ratio = float(np.sum(desat_bright)) / float(num_bright)
+
+        # Genuine fire combustion pixels (distinct Red > Blue + 30, S >= 50, warm hue)
+        true_fire = (
+            (r >= 130) &
+            (r >= b + 30) &
+            (r >= g + 8) &
+            (s_ch >= 50) &
+            ((hsv[:, :, 0] <= 32) | (hsv[:, :, 0] >= 165))
+        )
+        true_fire_px = int(np.sum(true_fire))
+
+        # If bright region is predominantly desaturated/white and lacks genuine combustion pixels
+        if desat_ratio >= 0.60 and true_fire_px < max(6, int(0.04 * crop.shape[0] * crop.shape[1])):
+            return True
+        return False
+
     def verify_flame_chrominance(self, crop: np.ndarray, is_small_fire: bool = False) -> Tuple[bool, float, Dict[str, Any]]:
         if crop is None or crop.size == 0:
             return False, 0.0, {}
+
+        # First filter out artificial light fixtures and daylight reflections
+        if self.is_artificial_light(crop):
+            return False, 0.0, {'rejected_reason': 'artificial_light'}
 
         h, w = crop.shape[:2]
         total_px = max(1, h * w)
@@ -32,12 +69,12 @@ class FlameVerifier:
         s_ch = hsv[:, :, 1]
         v_ch = hsv[:, :, 2]
 
-        # 1. Warm flame combustion color (Red distinctly higher than Blue)
+        # 1. Warm flame combustion color (Red distinctly higher than Blue, warm saturation)
         flame_mask = (
             (r >= 130) &
-            (r >= b + 35) &
-            (v_ch >= 100) &
-            (s_ch >= 25)
+            (r >= b + 32) &
+            (v_ch >= 95) &
+            (s_ch >= 30)
         )
 
         # 2. Emissive combustion core (hot luminous white/yellow core characteristic of real flames)
@@ -48,22 +85,32 @@ class FlameVerifier:
             (r >= b + 25)
         )
 
+        # 3. Butane / Gas blue flame base (characteristic of lighters and torch burners)
+        gas_mask = (
+            (b >= 120) &
+            (v_ch >= 110) &
+            (g >= 80) &
+            (b >= r)
+        )
+
         flame_px = int(np.sum(flame_mask))
         core_px = int(np.sum(core_mask))
-        flame_ratio = flame_px / total_px
+        gas_px = int(np.sum(gas_mask))
+        flame_ratio = (flame_px + core_px + gas_px) / total_px
 
         stats = {
             'flame_ratio': flame_ratio,
             'flame_px': flame_px,
             'core_px': core_px,
+            'gas_px': gas_px,
             'mean_bgr': (float(b.mean()), float(g.mean()), float(r.mean()))
         }
 
-        # Real flames or fire test targets require warm combustion pixels or luminous core
+        # Real flames require warm combustion pixels (core alone cannot pass without flame pixels)
         if is_small_fire:
-            is_valid = (flame_px >= 3) or (core_px >= 1)
+            is_valid = (flame_px >= 3 and flame_ratio >= 0.015) or (flame_px >= 2 and core_px >= 2) or (gas_px >= 2)
         else:
-            is_valid = (flame_px >= 6 and flame_ratio >= 0.015) or (core_px >= 2) or (flame_px >= 12)
+            is_valid = (flame_px >= 6 and flame_ratio >= 0.02) or (flame_px >= 4 and core_px >= 2) or (gas_px >= 3) or (flame_px >= 12)
 
         return is_valid, flame_ratio, stats
 
@@ -117,15 +164,14 @@ class FlameVerifier:
                     break
 
             if matched_track is None:
-                # For a brand new track, require positive flicker from the start
-                is_dyn = flicker_score >= (min_flicker_score * 0.8)
+                # Brand new detection candidate: allow immediate reaction on first frames
                 matched_track = {
                     'center': (center_x, center_y),
                     'streak': 1,
                     'flicker_history': [flicker_score]
                 }
                 tracks.append(matched_track)
-                return is_dyn, flicker_score
+                return True, flicker_score
             else:
                 matched_track['center'] = (center_x, center_y)
                 matched_track['streak'] += 1
@@ -134,8 +180,8 @@ class FlameVerifier:
                     matched_track['flicker_history'].pop(0)
 
                 avg_flicker = float(np.mean(matched_track['flicker_history']))
-                # Static objects (toys, rolls, walls, lamps) have very low variance (< min_flicker_score)
-                if avg_flicker < min_flicker_score:
+                # Static objects (toys, rolls, walls, lamps) that persist with zero flicker over several frames are suppressed
+                if matched_track['streak'] >= 3 and avg_flicker < min_flicker_score:
                     logger.debug(
                         f"Cam {camera_id}: Static false positive suppressed "
                         f"(streak={matched_track['streak']}, avg_flicker={avg_flicker:.2f} < {min_flicker_score})"
@@ -321,7 +367,7 @@ class FireDetector:
 
                     # 2. Fire / Small Fire Detection
                     if class_lower in ['fire', 'flame', 'small_fire', 'small fire']:
-                        fire_thresh = getattr(settings, 'SMALL_FIRE_CONFIDENCE_THRESHOLD', 0.35)
+                        fire_thresh = getattr(settings, 'SMALL_FIRE_CONFIDENCE_THRESHOLD', 0.28)
                         if confidence < fire_thresh:
                             continue
 
@@ -462,12 +508,21 @@ class FireDetector:
         if not detection_result.get('bounding_boxes'):
             return annotated_frame
 
-        fire_level = detection_result['fire_level']
+        orig_w = detection_result.get('frame_width', w) or w
+        orig_h = detection_result.get('frame_height', h) or h
+        scale_x = w / float(orig_w) if orig_w > 0 else 1.0
+        scale_y = h / float(orig_h) if orig_h > 0 else 1.0
+
+        fire_level = detection_result.get('fire_level', 1)
         level_color = self.classifier.get_level_color(fire_level)
         color_bgr = self._hex_to_bgr(level_color)
 
         for box in detection_result['bounding_boxes']:
-            x1, y1, x2, y2 = [int(coord) for coord in box['bbox']]
+            raw_box = box['bbox']
+            x1 = int(raw_box[0] * scale_x)
+            y1 = int(raw_box[1] * scale_y)
+            x2 = int(raw_box[2] * scale_x)
+            y2 = int(raw_box[3] * scale_y)
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w - 1, x2), min(h - 1, y2)
 
@@ -482,7 +537,7 @@ class FireDetector:
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color_bgr, -1)
             cv2.addWeighted(overlay, 0.15, annotated_frame, 0.85, 0, annotated_frame)
 
-            line_len = min(20, bw // 4, bh // 4)
+            line_len = min(20, max(6, bw // 4), max(6, bh // 4))
             thickness = 2
 
             cv2.line(annotated_frame, (x1, y1), (x1 + line_len, y1), color_bgr, thickness)

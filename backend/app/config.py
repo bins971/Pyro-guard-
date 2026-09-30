@@ -22,13 +22,13 @@ class Settings(BaseSettings):
             return self.MODEL_PATH
         return os.path.join(PROJECT_ROOT, self.MODEL_PATH).replace("\\", "/")
 
-    CONFIDENCE_THRESHOLD: float = 0.35
-    SMOKE_CONFIDENCE_THRESHOLD: float = 0.25
-    SMALL_FIRE_CONFIDENCE_THRESHOLD: float = 0.35
+    CONFIDENCE_THRESHOLD: float = 0.50
+    SMOKE_CONFIDENCE_THRESHOLD: float = 0.35
+    SMALL_FIRE_CONFIDENCE_THRESHOLD: float = 0.48
     FIRE_LEVEL_THRESHOLDS: str = "0.02,0.10"
     ENABLE_COLOR_FALLBACK: bool = False
     ENABLE_FLICKER_VERIFICATION: bool = True
-    MIN_FLICKER_SCORE: float = 1.0
+    MIN_FLICKER_SCORE: float = 1.8
 
     SMTP_HOST: str = "smtp-relay.brevo.com"
     SMTP_PORT: int = 587
@@ -50,12 +50,12 @@ class Settings(BaseSettings):
     FRAME_WIDTH: int = 1280
     FRAME_HEIGHT: int = 720
     
-    INFERENCE_SIZE: int = 416
+    INFERENCE_SIZE: int = 320
 
     ALERT_COOLDOWN_SECONDS: int = 300
     MIN_CONFIDENCE_FOR_ALERT: float = 0.25
 
-    DETECTION_PERSISTENCE_FRAMES: int = 3
+    DETECTION_PERSISTENCE_FRAMES: int = 1
     SENSOR_VERIFICATION_ENABLED: bool = True
     REQUIRE_SMOKE_FOR_LOW_CONF: bool = False
 
