@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     FIRE_LEVEL_THRESHOLDS: str = "0.02,0.10"
     ENABLE_COLOR_FALLBACK: bool = False
     ENABLE_FLICKER_VERIFICATION: bool = True
-    MIN_FLICKER_SCORE: float = 0.8
+    MIN_FLICKER_SCORE: float = 1.0
 
     SMTP_HOST: str = "smtp-relay.brevo.com"
     SMTP_PORT: int = 587

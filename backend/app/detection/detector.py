@@ -66,49 +66,67 @@ class FlameVerifier:
         h, w = crop.shape[:2]
         total_px = max(1, h * w)
 
+        # Minimum physical box size: reject tiny sensor noise clusters (< 8x8 or < 64px)
+        if w < 8 or h < 8 or total_px < 64:
+            return False, 0.0, {'reason': 'box_too_small'}
+
         b, g, r = cv2.split(crop.astype(np.int32))
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         s_ch = hsv[:, :, 1]
         v_ch = hsv[:, :, 2]
 
-        # 1. Warm flame combustion color (genuine fire has distinct orange/yellow warmth with G >= 60)
+        # 1. Warm flame combustion color (genuine fire has distinct orange/yellow warmth with G >= 55)
         flame_mask = (
-            (r >= 130) &
-            (g >= 60) &
-            (r >= b + 20) &
+            (r >= 135) &
+            (g >= 55) &
+            (r >= b + 30) &
+            (r >= g - 15) &
             (v_ch >= 90) &
-            (s_ch >= 25)
+            (s_ch >= 45)
         )
 
         # 2. Emissive combustion core (hot luminous white/yellow core characteristic of real flames)
+        # Must still exhibit warm fire emissivity (R >= B + 20), not cold blue-white daylight sky (where R ~ B)
         core_mask = (
-            ((r >= 180) & (g >= 120) & (v_ch >= 150) & (r >= b + 15)) |
-            ((r >= 240) & (g >= 220) & (v_ch >= 240))
+            (r >= 210) &
+            (g >= 130) &
+            (v_ch >= 170) &
+            (r >= b + 20) &
+            (s_ch >= 25)
         )
 
         # 3. Butane / Gas blue flame base (characteristic of lighters and torch burners)
         gas_mask = (
-            (b >= 120) &
+            (b >= 130) &
             (v_ch >= 110) &
             (g >= 80) &
-            (b >= r)
+            (b >= r + 20) &
+            (s_ch >= 45)
         )
 
         flame_px = int(np.sum(flame_mask))
         core_px = int(np.sum(core_mask))
         gas_px = int(np.sum(gas_mask))
-        flame_ratio = (flame_px + core_px + gas_px) / total_px
+        active_fire_px = flame_px + core_px + gas_px
+        flame_ratio = active_fire_px / total_px
 
         stats = {
             'flame_ratio': flame_ratio,
             'flame_px': flame_px,
             'core_px': core_px,
             'gas_px': gas_px,
+            'total_px': total_px,
             'mean_bgr': (float(b.mean()), float(g.mean()), float(r.mean()))
         }
 
-        # Any genuine flame exhibits combustion warmth, luminous core, or butane blue gas base
-        is_valid = (flame_px >= 2) or (core_px >= 2) or (gas_px >= 2)
+        min_active_px = 8 if is_small_fire or total_px < 600 else 20
+        min_flame_mantle = 4 if is_small_fire or total_px < 600 else 10
+
+        is_valid = bool(
+            (active_fire_px >= min_active_px) and
+            (flame_ratio >= 0.05) and
+            ((flame_px >= min_flame_mantle) or (gas_px >= min_flame_mantle))
+        )
 
         return is_valid, flame_ratio, stats
 
@@ -170,6 +188,9 @@ class FlameVerifier:
                     'flicker_history': [flicker_score]
                 }
                 tracks.append(matched_track)
+                # If a previous frame exists and this candidate has essentially zero motion/flicker, suppress immediately
+                if flicker_score < (min_flicker_score * 0.5):
+                    return False, flicker_score
                 return True, flicker_score
             else:
                 matched_track['center'] = (center_x, center_y)
@@ -179,8 +200,8 @@ class FlameVerifier:
                     matched_track['flicker_history'].pop(0)
 
                 avg_flicker = float(np.mean(matched_track['flicker_history']))
-                # Static objects (Christmas ornaments, toys, rolls, walls, lamps) that persist with zero flicker are suppressed
-                if matched_track['streak'] >= 3 and avg_flicker < min_flicker_score:
+                # Static objects (windows, daylight glare, walls, lamps) that persist with zero flicker are suppressed
+                if matched_track['streak'] >= 2 and avg_flicker < min_flicker_score:
                     logger.debug(
                         f"Cam {camera_id}: Static false positive suppressed "
                         f"(streak={matched_track['streak']}, avg_flicker={avg_flicker:.2f} < {min_flicker_score})"
@@ -346,6 +367,8 @@ class FireDetector:
 
                     bx1, by1 = max(0, int(x1)), max(0, int(y1))
                     bx2, by2 = min(frame_width, int(x2)), min(frame_height, int(y2))
+                    if (bx2 - bx1) < 8 or (by2 - by1) < 8 or ((bx2 - bx1) * (by2 - by1)) < 64:
+                        continue
                     crop = frame[by1:by2, bx1:bx2]
                     if crop.size == 0:
                         continue
@@ -397,12 +420,14 @@ class FireDetector:
         if not bounding_boxes:
             b_ch, g_ch, r_ch = cv2.split(frame.astype(np.int32))
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            s_ch = hsv[:, :, 1]
             v_ch = hsv[:, :, 2]
 
-            # Fast combustion hotspot mask: white-hot core or incandescent yellow/orange
+            # Fast combustion hotspot mask: incandescent yellow/orange or butane blue gas
+            # Pure desaturated white sky/daylight is strictly excluded
             hotspot_mask = (
-                (((r_ch >= 200) & (g_ch >= 120) & (r_ch >= b_ch + 15) & (v_ch >= 150)) |
-                 ((r_ch >= 240) & (g_ch >= 220) & (v_ch >= 240)))
+                ((r_ch >= 170) & (g_ch >= 80) & (r_ch >= b_ch + 20) & (s_ch >= 40) & (v_ch >= 130)) |
+                ((b_ch >= 130) & (b_ch >= r_ch + 20) & (s_ch >= 40) & (v_ch >= 130))
             ).astype(np.uint8) * 255
 
             num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(hotspot_mask)
@@ -437,8 +462,11 @@ class FireDetector:
                         )[0]
 
                 if crop_res.boxes is not None and len(crop_res.boxes) > 0:
+                    fire_thresh = getattr(settings, 'SMALL_FIRE_CONFIDENCE_THRESHOLD', 0.28)
                     for b in crop_res.boxes:
                         conf = float(b.conf[0].cpu().numpy())
+                        if conf < fire_thresh:
+                            continue
                         xy = b.xyxy[0].cpu().numpy()
                         gx1, gy1 = float(xy[0] + cx1), float(xy[1] + cy1)
                         gx2, gy2 = float(xy[2] + cx1), float(xy[3] + cy1)
@@ -447,6 +475,12 @@ class FireDetector:
                         if flame_crop.size > 0:
                             is_valid, _, _ = self.verifier.verify_flame_chrominance(flame_crop, is_small_fire=True)
                             if is_valid:
+                                if settings.ENABLE_FLICKER_VERIFICATION:
+                                    is_dynamic, _ = self.verifier.check_temporal_flicker(
+                                        camera_id, [gx1, gy1, gx2, gy2], frame_gray, settings.MIN_FLICKER_SCORE
+                                    )
+                                    if not is_dynamic:
+                                        continue
                                 bounding_boxes.append({
                                     'bbox': [gx1, gy1, gx2, gy2],
                                     'confidence': conf,
