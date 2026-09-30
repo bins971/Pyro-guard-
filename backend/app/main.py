@@ -623,14 +623,10 @@ async def live_feed(camera_id: int):
             else:
                 display_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-            # Use active overlay cache with persistence to ensure bounding boxes display smoothly
+            # Only draw bounding boxes for confirmed fires with active persistence overlays
             overlay_info = _active_fire_overlays.get(camera_id)
             if overlay_info and _time.time() < overlay_info['expires_at'] and overlay_info['result'].get('bounding_boxes'):
                 display_frame = detector.draw_detections(display_frame, overlay_info['result'])
-            else:
-                cached = _cached_detections.get(camera_id)
-                if cached and cached.get('fire_detected') and len(cached.get('bounding_boxes', [])) > 0:
-                    display_frame = detector.draw_detections(display_frame, cached)
 
             ret, buffer = cv2.imencode('.jpg', display_frame, [
                 cv2.IMWRITE_JPEG_QUALITY, 35,
