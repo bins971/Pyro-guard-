@@ -29,29 +29,29 @@ class FlameVerifier:
         v_ch = hsv[:, :, 2]
         b, g, r = cv2.split(crop.astype(np.int32))
 
+        # Check for warm incandescent flame halo (characteristic of real flames even when core is overexposed white)
+        warm_halo = (
+            (r >= 140) &
+            (r >= b + 20) &
+            (g >= 60) &
+            (v_ch >= 80)
+        )
+        if np.sum(warm_halo) >= 2:
+            # Genuine flame with warm combustion halo is NEVER an artificial light
+            return False
+
         bright_mask = v_ch >= 150
         num_bright = int(np.sum(bright_mask))
         if num_bright < 10:
             return False
 
-        # Artificial lights have very low saturation (S < 45) or balanced RGB (r ~ g ~ b)
-        desat_bright = bright_mask & (s_ch < 45)
+        # Artificial lights have very low saturation (S < 35) or balanced RGB (r ~ g ~ b)
+        desat_bright = bright_mask & (s_ch < 35)
         desat_ratio = float(np.sum(desat_bright)) / float(num_bright)
 
-        # Genuine fire combustion pixels (distinct Red > Blue + 20, S >= 40, warm fire hue)
-        true_fire = (
-            (r >= 120) &
-            (r >= b + 20) &
-            (r >= g + 5) &
-            (s_ch >= 40) &
-            ((hsv[:, :, 0] <= 35) | (hsv[:, :, 0] >= 160))
-        )
-        true_fire_px = int(np.sum(true_fire))
-
-        # Artificial lamps (fluorescent tubes, ceiling lamps) have virtually ZERO (< 3) true fire pixels
-        # and are overwhelmingly white/desaturated (> 75%).
-        # Real flames (lighters, candles, fire) always have rich combustion pixels and are NOT rejected.
-        if desat_ratio >= 0.75 and true_fire_px < 3:
+        # Cold white artificial lamps (fluorescent tubes, ceiling downlights) have ZERO warm combustion
+        # and are predominantly white/desaturated (> 80%) with balanced RGB
+        if desat_ratio >= 0.80 and float(np.mean(np.abs(r - b))) < 18 and float(np.mean(np.abs(r - g))) < 18:
             return True
         return False
 
@@ -71,21 +71,19 @@ class FlameVerifier:
         s_ch = hsv[:, :, 1]
         v_ch = hsv[:, :, 2]
 
-        # 1. Warm flame combustion color (genuine fire has distinct orange/yellow warmth with G >= 70)
+        # 1. Warm flame combustion color (genuine fire has distinct orange/yellow warmth with G >= 60)
         flame_mask = (
-            (r >= 135) &
-            (g >= 70) &
-            (r >= b + 25) &
-            (v_ch >= 95) &
-            (s_ch >= 30)
+            (r >= 130) &
+            (g >= 60) &
+            (r >= b + 20) &
+            (v_ch >= 90) &
+            (s_ch >= 25)
         )
 
         # 2. Emissive combustion core (hot luminous white/yellow core characteristic of real flames)
         core_mask = (
-            (r >= 190) &
-            (g >= 130) &
-            (v_ch >= 160) &
-            (r >= b + 15)
+            ((r >= 180) & (g >= 120) & (v_ch >= 150) & (r >= b + 15)) |
+            ((r >= 240) & (g >= 220) & (v_ch >= 240))
         )
 
         # 3. Butane / Gas blue flame base (characteristic of lighters and torch burners)
@@ -109,9 +107,8 @@ class FlameVerifier:
             'mean_bgr': (float(b.mean()), float(g.mean()), float(r.mean()))
         }
 
-        # Real flames require genuine combustion pixels, luminous core, or gas flame.
-        # Static pure-red objects (like Christmas balls or red cloth) lack yellow/orange combustion or core.
-        is_valid = (flame_px >= 3 and (core_px >= 1 or flame_px >= 6)) or (core_px >= 2) or (gas_px >= 2)
+        # Any genuine flame exhibits combustion warmth, luminous core, or butane blue gas base
+        is_valid = (flame_px >= 2) or (core_px >= 2) or (gas_px >= 2)
 
         return is_valid, flame_ratio, stats
 
@@ -151,7 +148,8 @@ class FlameVerifier:
             prev_crop = prev_gray[y1:y2, x1:x2]
 
             diff = cv2.absdiff(curr_crop, prev_crop)
-            flicker_score = float(np.mean(diff))
+            # Use 90th percentile difference so a small flame inside a large bounding box is not diluted
+            flicker_score = float(np.percentile(diff, 90)) if diff.size > 0 else 0.0
 
             # Maintain history of flicker scores for this camera's tracked region
             tracks = self.tracked_objects.setdefault(camera_id, [])
@@ -165,17 +163,13 @@ class FlameVerifier:
                     break
 
             if matched_track is None:
-                # Brand new detection candidate: track its center and motion
+                # Brand new detection candidate: track center and motion
                 matched_track = {
                     'center': (center_x, center_y),
                     'streak': 1,
                     'flicker_history': [flicker_score]
                 }
                 tracks.append(matched_track)
-                # If there is already a previous frame for this camera and this candidate is essentially stationary,
-                # reject it immediately to prevent initial blip false alerts on stationary decor/toys/lamps
-                if prev_gray is not None and flicker_score < min_flicker_score * 0.5:
-                    return False, flicker_score
                 return True, flicker_score
             else:
                 matched_track['center'] = (center_x, center_y)
@@ -186,7 +180,7 @@ class FlameVerifier:
 
                 avg_flicker = float(np.mean(matched_track['flicker_history']))
                 # Static objects (Christmas ornaments, toys, rolls, walls, lamps) that persist with zero flicker are suppressed
-                if matched_track['streak'] >= 2 and avg_flicker < min_flicker_score:
+                if matched_track['streak'] >= 3 and avg_flicker < min_flicker_score:
                     logger.debug(
                         f"Cam {camera_id}: Static false positive suppressed "
                         f"(streak={matched_track['streak']}, avg_flicker={avg_flicker:.2f} < {min_flicker_score})"
@@ -399,59 +393,62 @@ class FireDetector:
                         })
                         continue
 
-        # ── 3. Optional Small Flame Candidate Slicing (only if explicitly enabled) ───
-        if not bounding_boxes and getattr(settings, 'ENABLE_HOTSPOT_SCANNING', False):
+        # ── 3. High-Sensitivity Hotspot Slicing (detects small flames/lighters in 720p/1080p feeds) ──
+        if not bounding_boxes:
             b_ch, g_ch, r_ch = cv2.split(frame.astype(np.int32))
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             v_ch = hsv[:, :, 2]
 
-            core_mask = (
-                (r_ch >= 190) &
-                (g_ch >= 140) &
-                (v_ch >= 180) &
-                (r_ch >= b_ch + 15)
+            # Fast combustion hotspot mask: white-hot core or incandescent yellow/orange
+            hotspot_mask = (
+                (((r_ch >= 200) & (g_ch >= 120) & (r_ch >= b_ch + 15) & (v_ch >= 150)) |
+                 ((r_ch >= 240) & (g_ch >= 220) & (v_ch >= 240)))
             ).astype(np.uint8) * 255
 
-            contours, _ = cv2.findContours(core_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area < 35 or area > 10000:
-                    continue
-                x, y, bw, bh = cv2.boundingRect(cnt)
-                pad_w = max(40, bw)
-                pad_h = max(40, bh)
-                cx, cy = x + bw // 2, y + bh // 2
-                cx1 = max(0, cx - pad_w)
-                cy1 = max(0, cy - pad_h)
-                cx2 = min(frame_width, cx + pad_w)
-                cy2 = min(frame_height, cy + pad_h)
+            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(hotspot_mask)
+            candidates = []
+            for i in range(1, num_labels):
+                area = stats[i, cv2.CC_STAT_AREA]
+                if 8 <= area <= 6000:
+                    candidates.append((area, centroids[i], stats[i]))
 
+            # Test up to 3 candidate hotspots
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            for _, centroid, stat in candidates[:3]:
+                cx, cy = int(centroid[0]), int(centroid[1])
+                bw, bh = stat[cv2.CC_STAT_WIDTH], stat[cv2.CC_STAT_HEIGHT]
+                pad = max(60, max(bw, bh) * 2)
+                cx1 = max(0, cx - pad)
+                cy1 = max(0, cy - pad)
+                cx2 = min(frame_width, cx + pad)
+                cy2 = min(frame_height, cy + pad)
                 crop = frame[cy1:cy2, cx1:cx2]
                 if crop.size == 0:
                     continue
 
                 with self.lock:
-                    crop_res = self.model(
-                        crop,
-                        conf=max(0.35, self.confidence_threshold),
-                        classes=self.target_class_ids,
-                        verbose=False
-                    )[0]
+                    import torch
+                    with torch.inference_mode():
+                        crop_res = self.model(
+                            crop,
+                            conf=0.22,
+                            classes=self.target_class_ids,
+                            verbose=False
+                        )[0]
 
-                for b in crop_res.boxes:
-                    cls_id = int(b.cls[0].cpu().numpy())
-                    cname = self.model.names[cls_id].lower()
-                    if cname in ['fire', 'flame', 'small_fire', 'small fire']:
+                if crop_res.boxes is not None and len(crop_res.boxes) > 0:
+                    for b in crop_res.boxes:
                         conf = float(b.conf[0].cpu().numpy())
                         xy = b.xyxy[0].cpu().numpy()
-                        gx1, gy1, gx2, gy2 = xy[0] + cx1, xy[1] + cy1, xy[2] + cx1, xy[3] + cy1
-                        # Verify candidate crop
+                        gx1, gy1 = float(xy[0] + cx1), float(xy[1] + cy1)
+                        gx2, gy2 = float(xy[2] + cx1), float(xy[3] + cy1)
+
                         flame_crop = frame[max(0, int(gy1)):min(frame_height, int(gy2)), max(0, int(gx1)):min(frame_width, int(gx2))]
                         if flame_crop.size > 0:
                             is_valid, _, _ = self.verifier.verify_flame_chrominance(flame_crop, is_small_fire=True)
                             if is_valid:
                                 bounding_boxes.append({
-                                    'bbox': [float(gx1), float(gy1), float(gx2), float(gy2)],
+                                    'bbox': [gx1, gy1, gx2, gy2],
                                     'confidence': conf,
                                     'class': 'Fire'
                                 })
