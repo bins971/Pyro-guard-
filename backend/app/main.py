@@ -235,11 +235,7 @@ async def monitor_cameras():
 
                 result = await asyncio.to_thread(detector.detect, frame, camera_id)
 
-                if not hasattr(monitor_cameras, '_cam_cache') or monitor_cameras.frame_count % 60 == 0:
-                    monitor_cameras._cam_cache = {c.id: c for c in db.query(Camera).all()}
-                camera = monitor_cameras._cam_cache.get(camera_id)
-                if not camera:
-                    camera = db.query(Camera).filter(Camera.id == camera_id).first()
+                camera = db.query(Camera).filter(Camera.id == camera_id).first()
                 if not camera:
                     continue
 
@@ -413,8 +409,8 @@ async def monitor_cameras():
                         if sensor_id in sensor_manager.sensors:
                             sensor_manager.sensors[sensor_id].current_state['status'] = 'nominal'
 
-            # Pace AI inference on Raspberry Pi: ~3.5 FPS inference prevents 100% CPU lock, thermal throttling, and frame drop
-            sleep_interval = 0.20 if _is_raspberry_pi else 0.05
+            # Pace AI inference: 100ms yield on Pi balances instant multi-camera fire detection with cool CPU operation
+            sleep_interval = 0.10 if _is_raspberry_pi else 0.05
             await asyncio.sleep(sleep_interval)
 
         except Exception as e:

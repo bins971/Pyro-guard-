@@ -67,28 +67,51 @@ def upload_dir(local_dir: Path, remote_dir: str):
             print(f"  -> Uploading: {rel / f if str(rel) != '.' else f}")
             sftp.put(str(local_file), remote_file)
 
+# Stop service and kill any lingering processes to avoid port 8000 or /dev/video0 conflict
+print("[*] Stopping service and clearing any lingering processes...")
+stop_cmd = f"echo '{PI_PASS}' | sudo -S systemctl stop pyroguard.service; sleep 1; echo '{PI_PASS}' | sudo -S pkill -9 -f uvicorn || true"
+client.exec_command(stop_cmd)[1].read()
+
 upload_dir(LOCAL_APP, REMOTE_APP)
 print("  -> Uploading: backend/.env")
 sftp.put(str(LOCAL_ROOT / "backend" / ".env"), f"{REMOTE_BASE}/backend/.env")
 sftp.close()
 
-# Deactivate non-existent Camera 2 (id=1) in Pi database so it stops timing out and spamming V4L2
-deactivate_cam_cmd = """python3 -c "
+# Ensure HARDWARE_MODE=raspberry_pi in remote .env
+client.exec_command(f"sed -i 's/^HARDWARE_MODE=.*/HARDWARE_MODE=raspberry_pi/' {REMOTE_BASE}/backend/.env")[1].read()
+
+# Ensure cameras are properly active in database
+ensure_cam_cmd = """python3 -c "
 import sqlite3
 conn = sqlite3.connect('/home/pyroguard/pyro-guard/backend/pyroguard.db')
-conn.execute('UPDATE cameras SET is_active=0 WHERE id=1')
+tapo_url = 'rtsp://pyroguard:pyroguard041505@192.168.1.12:554/stream2'
+conn.execute('''
+    UPDATE cameras 
+    SET name='Tapo C200C', location='Surveillance', rtsp_url=?, is_active=1 
+    WHERE id=1
+''', (tapo_url,))
+conn.execute('''
+    UPDATE cameras 
+    SET is_active=1 
+    WHERE id=0
+''')
 conn.commit()
-print('Deactivated unused Camera 2 in database.')
+print('Cameras in DB:', conn.execute('SELECT id, name, is_active FROM cameras').fetchall())
 " """
-stdin, stdout, stderr = client.exec_command(deactivate_cam_cmd)
+stdin, stdout, stderr = client.exec_command(ensure_cam_cmd)
 print(stdout.read().decode().strip())
 
-# Restart pyroguard systemd service on Pi
-print("\n[*] Restarting pyroguard.service on Pi...")
-restart_cmd = f"echo '{PI_PASS}' | sudo -S systemctl restart pyroguard.service && sleep 2 && systemctl is-active pyroguard.service"
+# Start pyroguard systemd service on Pi
+print("\n[*] Starting pyroguard.service on Pi...")
+restart_cmd = f"echo '{PI_PASS}' | sudo -S systemctl start pyroguard.service && sleep 3 && systemctl is-active pyroguard.service"
 stdin, stdout, stderr = client.exec_command(restart_cmd)
 status_output = stdout.read().decode().strip()
 print(f"[+] Service status: {status_output}")
 
+# Tail log
+_, stdout, _ = client.exec_command("tail -n 25 /home/pyroguard/pyro-guard/backend/backend.log")
+print("\n--- Recent Logs ---")
+print(stdout.read().decode('utf-8', errors='replace'))
+
 client.close()
-print("[+] Pi backend update and restart complete!")
+print("\n[+] Pi backend update and restart complete!")

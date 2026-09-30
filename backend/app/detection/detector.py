@@ -38,18 +38,20 @@ class FlameVerifier:
         desat_bright = bright_mask & (s_ch < 45)
         desat_ratio = float(np.sum(desat_bright)) / float(num_bright)
 
-        # Genuine fire combustion pixels (distinct Red > Blue + 30, S >= 50, warm hue)
+        # Genuine fire combustion pixels (distinct Red > Blue + 20, S >= 40, warm fire hue)
         true_fire = (
-            (r >= 130) &
-            (r >= b + 30) &
-            (r >= g + 8) &
-            (s_ch >= 50) &
-            ((hsv[:, :, 0] <= 32) | (hsv[:, :, 0] >= 165))
+            (r >= 120) &
+            (r >= b + 20) &
+            (r >= g + 5) &
+            (s_ch >= 40) &
+            ((hsv[:, :, 0] <= 35) | (hsv[:, :, 0] >= 160))
         )
         true_fire_px = int(np.sum(true_fire))
 
-        # If bright region is predominantly desaturated/white and lacks genuine combustion pixels
-        if desat_ratio >= 0.60 and true_fire_px < max(6, int(0.04 * crop.shape[0] * crop.shape[1])):
+        # Artificial lamps (fluorescent tubes, ceiling lamps) have virtually ZERO (< 3) true fire pixels
+        # and are overwhelmingly white/desaturated (> 75%).
+        # Real flames (lighters, candles, fire) always have rich combustion pixels and are NOT rejected.
+        if desat_ratio >= 0.75 and true_fire_px < 3:
             return True
         return False
 
@@ -71,18 +73,18 @@ class FlameVerifier:
 
         # 1. Warm flame combustion color (Red distinctly higher than Blue, warm saturation)
         flame_mask = (
-            (r >= 130) &
-            (r >= b + 32) &
-            (v_ch >= 95) &
-            (s_ch >= 30)
+            (r >= 120) &
+            (r >= b + 20) &
+            (v_ch >= 90) &
+            (s_ch >= 25)
         )
 
         # 2. Emissive combustion core (hot luminous white/yellow core characteristic of real flames)
         core_mask = (
-            (r >= 190) &
-            (g >= 125) &
-            (v_ch >= 170) &
-            (r >= b + 25)
+            (r >= 180) &
+            (g >= 120) &
+            (v_ch >= 160) &
+            (r >= b + 15)
         )
 
         # 3. Butane / Gas blue flame base (characteristic of lighters and torch burners)
@@ -106,11 +108,9 @@ class FlameVerifier:
             'mean_bgr': (float(b.mean()), float(g.mean()), float(r.mean()))
         }
 
-        # Real flames require warm combustion pixels (core alone cannot pass without flame pixels)
-        if is_small_fire:
-            is_valid = (flame_px >= 3 and flame_ratio >= 0.015) or (flame_px >= 2 and core_px >= 2) or (gas_px >= 2)
-        else:
-            is_valid = (flame_px >= 6 and flame_ratio >= 0.02) or (flame_px >= 4 and core_px >= 2) or (gas_px >= 3) or (flame_px >= 12)
+        # Real flames or fire test targets require warm combustion pixels, luminous core, or gas flame
+        # Any genuine flame (candle, lighter, fire) exhibits at least a few combustion or core pixels
+        is_valid = (flame_px >= 2) or (core_px >= 2) or (gas_px >= 2)
 
         return is_valid, flame_ratio, stats
 
