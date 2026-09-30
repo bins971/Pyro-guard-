@@ -29,15 +29,21 @@ class FlameVerifier:
         v_ch = hsv[:, :, 2]
         b, g, r = cv2.split(crop.astype(np.int32))
 
-        # Check for warm incandescent flame halo (characteristic of real flames even when core is overexposed white)
+        # Check for warm incandescent flame halo or blue butane gas base
+        # (characteristic of real flames even when core is overexposed white)
         warm_halo = (
             (r >= 140) &
             (r >= b + 20) &
             (g >= 60) &
             (v_ch >= 80)
         )
-        if np.sum(warm_halo) >= 2:
-            # Genuine flame with warm combustion halo is NEVER an artificial light
+        gas_halo = (
+            (b >= 100) &
+            (b >= r + 15) &
+            (v_ch >= 80)
+        )
+        if np.sum(warm_halo) >= 2 or np.sum(gas_halo) >= 4:
+            # Genuine flame with warm combustion halo or butane gas base is NEVER an artificial light
             return False
 
         bright_mask = v_ch >= 150
@@ -188,9 +194,6 @@ class FlameVerifier:
                     'flicker_history': [flicker_score]
                 }
                 tracks.append(matched_track)
-                # If a previous frame exists and this candidate has essentially zero motion/flicker, suppress immediately
-                if flicker_score < (min_flicker_score * 0.5):
-                    return False, flicker_score
                 return True, flicker_score
             else:
                 matched_track['center'] = (center_x, center_y)
@@ -338,7 +341,7 @@ class FireDetector:
         frame_height, frame_width = frame.shape[:2]
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        inference_conf = min(0.25, self.confidence_threshold)
+        inference_conf = min(0.14, self.confidence_threshold)
 
         with self.lock:
             # Run inference targeting only fire and smoke classes
@@ -348,7 +351,6 @@ class FireDetector:
                     frame,
                     conf=inference_conf,
                     classes=self.target_class_ids,
-                    imgsz=settings.INFERENCE_SIZE,
                     verbose=False
                 )
 
@@ -390,16 +392,29 @@ class FireDetector:
                     # 2. Fire / Small Fire Detection
                     if class_lower in ['fire', 'flame', 'small_fire', 'small fire']:
                         fire_thresh = getattr(settings, 'SMALL_FIRE_CONFIDENCE_THRESHOLD', 0.28)
-                        if confidence < fire_thresh:
-                            continue
 
                         # Verify flame chrominance and emissivity
-                        is_valid_flame, flame_ratio, _ = self.verifier.verify_flame_chrominance(
+                        is_valid_flame, flame_ratio, flame_stats = self.verifier.verify_flame_chrominance(
                             crop, is_small_fire=(confidence < 0.45 or (bx2 - bx1) * (by2 - by1) < 15000)
                         )
                         if not is_valid_flame:
                             logger.debug(f"Cam {camera_id}: Fire candidate rejected by chrominance check (ratio={flame_ratio:.2f})")
                             continue
+
+                        # If confidence is below standard threshold (e.g. 0.14 <= conf < 0.28 for close-up/lighter flames),
+                        # require strong physical combustion indicators:
+                        # (either blue butane gas base, warm flame mantle, or emissive core with combustion halo)
+                        if confidence < fire_thresh:
+                            gas_px = flame_stats.get('gas_px', 0)
+                            flame_px = flame_stats.get('flame_px', 0)
+                            core_px = flame_stats.get('core_px', 0)
+                            has_combustion_proof = (
+                                (gas_px >= 10) or
+                                (flame_px >= 15 and flame_ratio >= 0.05) or
+                                (core_px >= 20 and (flame_px >= 3 or gas_px >= 3))
+                            )
+                            if not has_combustion_proof:
+                                continue
 
                         # Verify dynamic flicker if enabled
                         if settings.ENABLE_FLICKER_VERIFICATION:

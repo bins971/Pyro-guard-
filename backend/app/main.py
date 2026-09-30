@@ -243,7 +243,9 @@ async def monitor_cameras():
                     consecutive_detections[camera_id] = 0
 
                 is_fire_legit = result['fire_detected']
-                required_frames = max(1, settings.DETECTION_PERSISTENCE_FRAMES)
+                conf = result.get('confidence', 0.0)
+                # Responsive persistence: 1 frame for high confidence (>= 0.40), 2 frames for lower/small fire
+                required_frames = 1 if conf >= 0.40 else min(2, max(1, settings.DETECTION_PERSISTENCE_FRAMES))
 
                 if is_fire_legit:
                     consecutive_detections[camera_id] += 1
@@ -260,7 +262,7 @@ async def monitor_cameras():
                 if is_confirmed_fire and len(result.get('bounding_boxes', [])) > 0:
                     _active_fire_overlays[camera_id] = {
                         'result': result,
-                        'expires_at': time.time() + 1.8
+                        'expires_at': time.time() + 3.0
                     }
 
                 # ── GPIO fire reaction: LED (Blue=Small, Green=Medium, Red=Critical) + Buzzer ──
@@ -294,7 +296,7 @@ async def monitor_cameras():
                             pass  # Skip saving, cooldown active
                         else:
                             last_save_time[camera_id] = current_time
-                            consecutive_detections[camera_id] = 0  
+                            consecutive_detections[camera_id] = required_frames  
 
                             image_dir = "detections"
                             os.makedirs(image_dir, exist_ok=True)
@@ -623,10 +625,20 @@ async def live_feed(camera_id: int):
             else:
                 display_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-            # Only draw bounding boxes for confirmed fires with active persistence overlays
+            # Draw bounding boxes on live feed:
+            # 1. Prefer active confirmed fire overlay (held for 3.0s to prevent flicker)
+            # 2. Or immediate verified detection from _cached_detections
+            overlay_to_draw = None
             overlay_info = _active_fire_overlays.get(camera_id)
             if overlay_info and _time.time() < overlay_info['expires_at'] and overlay_info['result'].get('bounding_boxes'):
-                display_frame = detector.draw_detections(display_frame, overlay_info['result'])
+                overlay_to_draw = overlay_info['result']
+            else:
+                cached = _cached_detections.get(camera_id)
+                if cached and cached.get('fire_detected') and cached.get('bounding_boxes'):
+                    overlay_to_draw = cached
+
+            if overlay_to_draw:
+                display_frame = detector.draw_detections(display_frame, overlay_to_draw)
 
             ret, buffer = cv2.imencode('.jpg', display_frame, [
                 cv2.IMWRITE_JPEG_QUALITY, 35,
